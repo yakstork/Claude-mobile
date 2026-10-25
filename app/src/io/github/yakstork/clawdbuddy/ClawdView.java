@@ -10,55 +10,65 @@ import android.view.View;
 import java.util.Random;
 
 /**
- * Пиксельный Clawd, нарисованный кодом (свой рисунок, без ресурсов приложения Claude).
- * Сетка 16×10 клеток плюс 4 клетки запаса сверху под прыжок. Кадры перерисовываются только
- * пока что-то двигается: моргание и взгляд — редкие отложенные задачи, а не постоянный цикл.
+ * Пиксельный Clawd в пропорциях веб-версии claude.ai: тело 8×6 клеток, ручки 2×2 по бокам,
+ * глаза-квадратики 1×1, четыре ножки по 2 клетки. Рисунок свой, кодом. Сетка 14×8 (клетка запаса
+ * слева и справа — для танца) плюс 6 клеток сверху под прыжок и поднятые руки. Клетка — целое число пикселей,
+ * чтобы края были чёткими. Кадры перерисовываются только пока что-то двигается.
  */
 final class ClawdView extends View {
-    static final int COLS = 16;
-    static final int SPRITE_ROWS = 10;
-    static final int HEADROOM = 4;
+    static final int BODY_COLS = 12;
+    static final int COLS = BODY_COLS + 2;
+    static final int SPRITE_ROWS = 8;
+    static final int HEADROOM = 6;
     static final int ROWS = SPRITE_ROWS + HEADROOM;
 
-    enum Mood { IDLE, TYPING, HAPPY }
+    enum Mood { IDLE, TYPING, HAPPY, DANCE }
 
-    private static final long JUMP_MS = 420;
-    private static final long TYPE_FRAME_MS = 140;
-    private static final long HAPPY_MS = 1600;
+    private static final long JUMP_MS = 440;
+    private static final long TYPE_FRAME_MS = 130;
+    private static final long DANCE_FRAME_MS = 170;
+    private static final int DANCE_FRAMES = 10;
+    private static final long HAPPY_MS = 1400;
+
+    private static final int LAPTOP = 0xFFC5C9CF;
+    private static final int LAPTOP_LOGO = 0xFFE9EBEE;
+    private static final int LAPTOP_BASE = 0xFF8A8F96;
 
     private final Paint paint = new Paint();
     private final Random random = new Random();
-    private float cell;
-    private int body, shade, eyes;
+    private int cell = 1;
+    private int body, eyes;
 
     private Mood mood = Mood.IDLE;
     private int look; // -1 влево, 0 прямо, 1 вправо
     private boolean blinking;
     private boolean typeFrame;
+    private int danceFrame;
     private long jumpStart = -1;
 
     ClawdView(Context c) {
         super(c);
         paint.setAntiAlias(false);
         setColor(0xFFD97757);
-        setSizeDp(52);
+        setSizeDp(42);
     }
 
+    /** Ширина самого Clawd (без запаса по бокам) в dp. */
     void setSizeDp(int widthDp) {
-        cell = widthDp * getResources().getDisplayMetrics().density / COLS;
+        int c = Math.max(1, Math.round(widthDp * getResources().getDisplayMetrics().density / BODY_COLS));
+        if (c == cell) return;
+        cell = c;
         requestLayout();
         invalidate();
     }
 
-    int widthPx() { return Math.round(cell * COLS); }
-    int heightPx() { return Math.round(cell * ROWS); }
-    /** Сколько пикселей окна занимает запас под прыжок над головой. */
-    float cellPx() { return cell; }
+    int widthPx() { return cell * COLS; }
+    int heightPx() { return cell * ROWS; }
+    int cellPx() { return cell; }
 
     void setColor(int color) {
         body = color;
-        shade = blend(color, 0xFF000000, 0.18f);
-        eyes = luminance(color) < 0.35f ? 0xFFF2F2F2 : 0xFF1A1A1A;
+        eyes = luminance(color) < 0.35f ? 0xFFF2F2F2 : 0xFF000000;
         invalidate();
     }
 
@@ -68,9 +78,14 @@ final class ClawdView extends View {
         if (mood == m) return;
         mood = m;
         removeCallbacks(typeTick);
+        removeCallbacks(danceTick);
         removeCallbacks(backToIdle);
         if (m == Mood.TYPING) post(typeTick);
         if (m == Mood.HAPPY) postDelayed(backToIdle, HAPPY_MS);
+        if (m == Mood.DANCE) {
+            danceFrame = 0;
+            post(danceTick);
+        }
         invalidate();
     }
 
@@ -80,9 +95,14 @@ final class ClawdView extends View {
         postOnAnimation(frame);
     }
 
+    /** Ответ готов: прыжок с поднятыми руками или короткий танец. */
     void celebrate() {
-        setMood(Mood.HAPPY);
-        jump();
+        if (random.nextInt(10) < 6) {
+            setMood(Mood.HAPPY);
+            jump();
+        } else {
+            setMood(Mood.DANCE);
+        }
     }
 
     @Override
@@ -96,6 +116,7 @@ final class ClawdView extends View {
         scheduleBlink();
         scheduleGlance();
         if (mood == Mood.TYPING) post(typeTick);
+        if (mood == Mood.DANCE) post(danceTick);
     }
 
     @Override
@@ -105,6 +126,7 @@ final class ClawdView extends View {
         removeCallbacks(glance);
         removeCallbacks(unglance);
         removeCallbacks(typeTick);
+        removeCallbacks(danceTick);
         removeCallbacks(frame);
         removeCallbacks(backToIdle);
         super.onDetachedFromWindow();
@@ -128,7 +150,19 @@ final class ClawdView extends View {
         @Override public void run() {
             typeFrame = !typeFrame;
             invalidate();
-            if (mood == Mood.TYPING) postDelayed(this, TYPE_FRAME_MS + random.nextInt(60));
+            if (mood == Mood.TYPING) postDelayed(this, TYPE_FRAME_MS + random.nextInt(70));
+        }
+    };
+
+    private final Runnable danceTick = new Runnable() {
+        @Override public void run() {
+            if (mood != Mood.DANCE) return;
+            if (++danceFrame >= DANCE_FRAMES) {
+                setMood(Mood.IDLE);
+                return;
+            }
+            invalidate();
+            postDelayed(this, DANCE_FRAME_MS);
         }
     };
 
@@ -140,7 +174,7 @@ final class ClawdView extends View {
         @Override public void run() {
             blinking = true;
             invalidate();
-            postDelayed(unblink, 120);
+            postDelayed(unblink, 110);
         }
     };
 
@@ -157,7 +191,7 @@ final class ClawdView extends View {
             if (mood == Mood.IDLE) {
                 look = random.nextBoolean() ? 1 : -1;
                 invalidate();
-                postDelayed(unglance, 700 + random.nextInt(600));
+                postDelayed(unglance, 700 + random.nextInt(700));
             } else {
                 scheduleGlance();
             }
@@ -174,89 +208,87 @@ final class ClawdView extends View {
 
     private void scheduleBlink() {
         removeCallbacks(blink);
-        postDelayed(blink, 2500 + random.nextInt(2500));
+        postDelayed(blink, 2500 + random.nextInt(3000));
     }
 
     private void scheduleGlance() {
         removeCallbacks(glance);
-        postDelayed(glance, 4000 + random.nextInt(5000));
+        postDelayed(glance, 4000 + random.nextInt(6000));
     }
 
     // ---- рисование ----
 
+    private int ox, oy;
+
     @Override
     protected void onDraw(Canvas canvas) {
-        float lift = 0, squash = 1;
+        int lift = 0;
+        boolean squat = false;
         if (jumpStart >= 0) {
             float t = Math.min(1f, (SystemClock.uptimeMillis() - jumpStart) / (float) JUMP_MS);
-            lift = (float) Math.sin(Math.PI * t) * 3.2f * cell;
-            if (t < 0.12f || t > 0.9f) squash = 0.9f; // присел перед прыжком и при приземлении
+            lift = Math.round((float) Math.sin(Math.PI * t) * 3.5f);
+            squat = t < 0.1f || t > 0.92f;
         }
-        canvas.save();
-        float bottom = ROWS * cell;
-        canvas.scale(1f, squash, COLS * cell / 2f, bottom);
-        canvas.translate(0, HEADROOM * cell - lift);
+        boolean dance = mood == Mood.DANCE;
+        ox = 1 + (dance ? (danceFrame % 2 == 0 ? -1 : 1) : 0);
+        oy = HEADROOM - lift;
 
-        boolean typing = mood == Mood.TYPING;
+        if (mood == Mood.TYPING) drawTyping(canvas);
+        else drawStanding(canvas, squat, dance);
+    }
+
+    private void drawStanding(Canvas c, boolean squat, boolean dance) {
         boolean happy = mood == Mood.HAPPY;
-
-        // ноги
-        int[] legs = typing ? new int[] {3, 12} : new int[] {3, 5, 10, 12};
-        for (int c : legs) rect(canvas, c, 8, c, 9, body);
-        // тело
-        rect(canvas, 2, 1, 13, 6, body);
-        rect(canvas, 2, 7, 13, 7, shade);
-
-        // руки
-        if (happy) {
-            rect(canvas, 0, 0, 1, 1, body);
-            rect(canvas, 1, 2, 1, 3, body);
-            rect(canvas, 14, 0, 15, 1, body);
-            rect(canvas, 14, 2, 14, 3, body);
-        } else if (typing) {
-            int l = typeFrame ? 5 : 6, r = typeFrame ? 6 : 5;
-            rect(canvas, 0, l, 1, l + 1, body);
-            rect(canvas, 14, r, 15, r + 1, body);
+        boolean armsUp = happy || (dance && danceFrame % 2 == 0);
+        // при приседании тело опускается на клетку, ножки короче
+        int s = squat ? 1 : 0;
+        rect(c, 2, s, 9, 5 + s, body);
+        if (armsUp) {
+            rect(c, 1, -2 + s, 1, 1 + s, body);
+            rect(c, 10, -2 + s, 10, 1 + s, body);
         } else {
-            rect(canvas, 0, 4, 1, 5, body);
-            rect(canvas, 14, 4, 15, 5, body);
+            rect(c, 0, 2 + s, 1, 3 + s, body);
+            rect(c, 10, 2 + s, 11, 3 + s, body);
         }
-
-        // глаза
+        int[] legs = {2, 4, 7, 9};
+        for (int i = 0; i < legs.length; i++) {
+            // в танце ножки переступают: то левая пара короче, то правая
+            boolean short_ = squat || (dance && (danceFrame % 2 == 0) == (i < 2));
+            rect(c, legs[i], short_ ? 7 : 6, legs[i], 7, body);
+        }
         if (happy) {
-            px(canvas, 4, 4, eyes); px(canvas, 5, 3, eyes); px(canvas, 6, 4, eyes);
-            px(canvas, 9, 4, eyes); px(canvas, 10, 3, eyes); px(canvas, 11, 4, eyes);
-        } else if (typing || blinking) {
-            px(canvas, 5, 4, eyes);
-            px(canvas, 10, 4, eyes);
-        } else {
-            rect(canvas, 5 + look, 3, 5 + look, 4, eyes);
-            rect(canvas, 10 + look, 3, 10 + look, 4, eyes);
+            px(c, 2, 2 + s, eyes); px(c, 3, 1 + s, eyes); px(c, 4, 2 + s, eyes);
+            px(c, 7, 2 + s, eyes); px(c, 8, 1 + s, eyes); px(c, 9, 2 + s, eyes);
+        } else if (!blinking) {
+            int l = dance ? 0 : look;
+            px(c, 3 + l, 1 + s, eyes);
+            px(c, 8 + l, 1 + s, eyes);
         }
+    }
 
-        // ноутбук: крышка к нам задней стороной, под ней клавиатура
-        if (typing) {
-            rect(canvas, 4, 5, 11, 8, 0xFFC5C9CF);
-            rect(canvas, 7, 6, 8, 7, 0xFFE9EBEE);
-            rect(canvas, 3, 9, 12, 9, 0xFF8A8F96);
+    /** Сидит за ноутбуком: крышка к нам задней стороной, глаза в экран, руки по очереди стучат. */
+    private void drawTyping(Canvas c) {
+        rect(c, 2, 0, 9, 5, body);
+        rect(c, 2, 6, 2, 6, body);
+        rect(c, 9, 6, 9, 6, body);
+        if (!blinking) {
+            px(c, 3, 2, eyes);
+            px(c, 8, 2, eyes);
         }
-        canvas.restore();
+        rect(c, 0, typeFrame ? 4 : 5, 1, typeFrame ? 4 : 5, body);
+        rect(c, 10, typeFrame ? 5 : 4, 11, typeFrame ? 5 : 4, body);
+        rect(c, 3, 3, 8, 6, LAPTOP);
+        rect(c, 5, 4, 6, 4, LAPTOP_LOGO);
+        rect(c, 1, 7, 10, 7, LAPTOP_BASE);
     }
 
     private void rect(Canvas c, int c0, int r0, int c1, int r1, int color) {
         paint.setColor(color);
-        c.drawRect(c0 * cell, r0 * cell, (c1 + 1) * cell, (r1 + 1) * cell, paint);
+        c.drawRect((c0 + ox) * cell, (r0 + oy) * cell, (c1 + 1 + ox) * cell, (r1 + 1 + oy) * cell, paint);
     }
 
     private void px(Canvas c, int col, int row, int color) {
         rect(c, col, row, col, row, color);
-    }
-
-    private static int blend(int a, int b, float t) {
-        int r = Math.round(Color.red(a) + (Color.red(b) - Color.red(a)) * t);
-        int g = Math.round(Color.green(a) + (Color.green(b) - Color.green(a)) * t);
-        int bl = Math.round(Color.blue(a) + (Color.blue(b) - Color.blue(a)) * t);
-        return Color.rgb(r, g, bl);
     }
 
     private static float luminance(int c) {

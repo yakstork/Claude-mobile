@@ -16,8 +16,8 @@ final class Prefs {
     static final String CELEBRATE = "celebrate";
     static final String HAPTICS = "haptics";
 
-    /** Ширина Clawd в dp для размеров S / M / L. */
-    static final int[] SIZES_DP = {40, 52, 64};
+    /** Ширина Clawd в dp для размеров S / M / L (на claude.ai он примерно как S). */
+    static final int[] SIZES_DP = {34, 42, 54};
 
     static final int[] COLORS = {
         0xFFD97757, // оранжевый Claude
@@ -39,7 +39,7 @@ final class Prefs {
     static boolean enabled(SharedPreferences p) { return p.getBoolean(ENABLED, true); }
     static int size(SharedPreferences p) { return p.getInt(SIZE, 1); }
     static int color(SharedPreferences p) { return p.getInt(COLOR, COLORS[0]); }
-    static float xFraction(SharedPreferences p) { return p.getFloat(X_FRACTION, 0.06f); }
+    static float xFraction(SharedPreferences p) { return p.getFloat(X_FRACTION, 0.94f); }
     static int yOffsetDp(SharedPreferences p) { return p.getInt(Y_OFFSET_DP, 0); }
     static boolean typing(SharedPreferences p) { return p.getBoolean(TYPING, true); }
     static boolean celebrate(SharedPreferences p) { return p.getBoolean(CELEBRATE, true); }
