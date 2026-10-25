@@ -63,6 +63,7 @@ public final class ClawdService extends AccessibilityService
     private static final long BURST_MS = 800;
     private static final long BURST_STEP_MS = 40;
     private static final long IDLE_POLL_MS = 400;
+    private static final long CALM_POLL_MS = 1500;
     private static final long CONTENT_THROTTLE_MS = 30;
     private static final long STOP_CHECK_MS = 200;
     /** Полный поиск поля ввода (дерево узлов) — не чаще, и только если содержимое менялось. */
@@ -91,9 +92,14 @@ public final class ClawdService extends AccessibilityService
     /** Приложение на переднем плане по последнему событию окна приложения; null — ещё не знаем. */
     private String foreground;
     private String homePackage;
+    /** Окна Claude сверху вниз — всплывающие подсказки и главное окно. */
+    private final List<AccessibilityNodeInfo> claudeRoots = new ArrayList<AccessibilityNodeInfo>();
     /** С какого момента окно Claude сверху, хотя последним «на передний план» вышло другое приложение. */
     private long topNotForegroundSince;
     private Vibrator vibrator;
+    private android.os.PowerManager power;
+    /** Когда последний раз что-то менялось (события, сдвиг рамки) — для редкого опроса в покое. */
+    private long lastActivity;
 
     private boolean claudeOnTop;
     private long claudeOnTopSince;
@@ -131,6 +137,8 @@ public final class ClawdService extends AccessibilityService
         prefs.registerOnSharedPreferenceChangeListener(this);
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+        power = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+        registerReceiver(screenOn, new android.content.IntentFilter(android.content.Intent.ACTION_SCREEN_ON));
 
         android.content.pm.ResolveInfo home = getPackageManager().resolveActivity(
                 new android.content.Intent(android.content.Intent.ACTION_MAIN)
@@ -172,9 +180,23 @@ public final class ClawdService extends AccessibilityService
         return p;
     }
 
+    /** Экран включился — проверить сразу, даже если окна не поменялись (нет экрана блокировки). */
+    private final android.content.BroadcastReceiver screenOn = new android.content.BroadcastReceiver() {
+        @Override public void onReceive(android.content.Context c, android.content.Intent i) {
+            burstUntil = SystemClock.uptimeMillis() + BURST_MS;
+            contentDirty = true;
+            schedule(0);
+        }
+    };
+
     @Override
     public void onDestroy() {
         instance = null;
+        try {
+            unregisterReceiver(screenOn);
+        } catch (IllegalArgumentException ignored) {
+            // не успели зарегистрировать
+        }
         handler.removeCallbacksAndMessages(null);
         if (prefs != null) prefs.unregisterOnSharedPreferenceChangeListener(this);
         if (clawd != null && clawd.isAttachedToWindow()) wm.removeViewImmediate(clawd);
@@ -218,11 +240,13 @@ public final class ClawdService extends AccessibilityService
         }
         if (type == AccessibilityEvent.TYPE_WINDOWS_CHANGED
                 || type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            burstUntil = SystemClock.uptimeMillis() + BURST_MS;
+            lastActivity = SystemClock.uptimeMillis();
+            burstUntil = lastActivity + BURST_MS;
             contentDirty = true;
             schedule(0);
         } else if (type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
             if (pkg != null && CLAUDE.contentEquals(pkg)) {
+                lastActivity = SystemClock.uptimeMillis();
                 contentDirty = true;
                 schedule(CONTENT_THROTTLE_MS);
             }
@@ -289,6 +313,13 @@ public final class ClawdService extends AccessibilityService
 
     private void tick() {
         long now = SystemClock.uptimeMillis();
+        if (power != null && !power.isInteractive()) {
+            // экран погас: ничего не проверяем, разбудят события окон при включении
+            hide("экран выключен");
+            setContentEvents(false);
+            claudeOnTop = false;
+            return;
+        }
         if (!Prefs.enabled(prefs)) {
             hide("выключен в настройках");
             setContentEvents(false);
@@ -354,6 +385,7 @@ public final class ClawdService extends AccessibilityService
         boolean stable = Math.abs(box.left - lastBox.left) <= tol && Math.abs(box.top - lastBox.top) <= tol
                 && Math.abs(box.right - lastBox.right) <= tol;
         lastBox.set(box);
+        if (!stable) lastActivity = now;
         unstable = stable ? 0 : unstable + 1;
         if (!shown) {
             // не ждём бесконечно, если что-то рядом всё время шевелится
@@ -369,7 +401,8 @@ public final class ClawdService extends AccessibilityService
     private void next(long now, boolean waitingToShow) {
         if (now < burstUntil || waitingToShow) schedule(BURST_STEP_MS);
         else if (generating) schedule(STOP_CHECK_MS);
-        else if (claudeOnTop) schedule(IDLE_POLL_MS);
+        // ничего не менялось 3 с — проверяем раз в 1,5 с: события всё равно будят сразу
+        else if (claudeOnTop) schedule(now - lastActivity < 3000 ? IDLE_POLL_MS : CALM_POLL_MS);
     }
 
     /**
@@ -403,9 +436,14 @@ public final class ClawdService extends AccessibilityService
             if (decided) continue; // дальше — только для отчёта
             if (type == AccessibilityWindowInfo.TYPE_APPLICATION) {
                 if (pkg != null && CLAUDE.contentEquals(pkg)) {
-                    result = root;
-                    decided = true;
-                } else if (coversScreen(r)) {
+                    // всплывающие окна Claude (подсказки при наборе, меню) лежат поверх главного —
+                    // собираем все его окна подряд, поле ввода может быть в любом
+                    if (result == null) {
+                        result = root;
+                        claudeRoots.clear();
+                    }
+                    claudeRoots.add(root);
+                } else if (result != null || coversScreen(r)) {
                     decided = true;
                 }
             } else if (type == AccessibilityWindowInfo.TYPE_SYSTEM && w.isFocused() && coversScreen(r)) {
@@ -418,6 +456,7 @@ public final class ClawdService extends AccessibilityService
             lastWindowsAt = now;
             lastWindows = sb.toString();
         }
+        if (result == null) claudeRoots.clear();
         return result;
     }
 
@@ -454,7 +493,10 @@ public final class ClawdService extends AccessibilityService
         AccessibilityNodeInfo best = null;
         int bestBottom = -1;
         Rect r = new Rect();
-        nodes.add(root);
+        // все окна Claude: при наборе поверх главного бывает окно подсказок без поля ввода
+        if (claudeRoots.isEmpty()) nodes.add(root);
+        else nodes.addAll(claudeRoots);
+        int roots = nodes.size();
         for (int i = 0; i < nodes.size() && i < 800; i++) {
             AccessibilityNodeInfo n = nodes.get(i);
             if (n == null) continue;
@@ -466,7 +508,7 @@ public final class ClawdService extends AccessibilityService
                 }
                 continue;
             }
-            if (n.isScrollable() && n != root) continue;
+            if (n.isScrollable() && i >= roots) continue;
             for (int c = 0; c < n.getChildCount(); c++) nodes.add(n.getChild(c));
         }
         if (best == null) {
@@ -737,7 +779,7 @@ public final class ClawdService extends AccessibilityService
      */
     private String report(AccessibilityNodeInfo e, List<AccessibilityNodeInfo> nodes, int fromY, int toY) {
         DisplayMetrics dm = getResources().getDisplayMetrics();
-        StringBuilder sb = new StringBuilder("Clawd 0.5 · " + Build.MANUFACTURER + " " + Build.MODEL
+        StringBuilder sb = new StringBuilder("Clawd 0.6 · " + Build.MANUFACTURER + " " + Build.MODEL
                 + " · Android " + Build.VERSION.RELEASE + " · " + dm.widthPixels + "×" + dm.heightPixels
                 + " @" + dm.density + "\n");
         sb.append("над текстом +").append(aboveEdit).append(", слева ").append(leftOfEdit)
