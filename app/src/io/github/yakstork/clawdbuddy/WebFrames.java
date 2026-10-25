@@ -3,7 +3,8 @@ package io.github.yakstork.clawdbuddy;
 /**
  * Кадры Clawd в стиле claude.ai/code: 34×23 пикселя, сняты по пикселям с записи экрана сайта
  * (12 кадров в секунду). «.» — пусто, O — тело, D — бок в тени, E — глаз, G — ноутбук.
- * Сгенерировано из видео; HAPPY (руки вверх) дорисован.
+ * Сгенерировано из видео. HAPPY — руки вверх как в кадре TURN, только анфас; SQUAT — присед
+ * (всё выше ног на пиксель ниже) для толчка и приземления.
  */
 final class WebFrames {
     static final int W = 34, H = 23;
@@ -461,13 +462,13 @@ final class WebFrames {
         "..................................",
         "..................................",
         "..................................",
-        "..................................",
-        "..........OO....................OO",
-        "..........OO....................OO",
-        "..........OO..OOOOOOOOOOOOOOOO..OO",
-        "..........OO..OOOOOOOOOOOOOOOO..OO",
-        "..........OOOOOOEEOOOOOOOOEEOOOOOO",
-        "..........OOOOOOEEOOOOOOOOEEOOOOOO",
+        "...............OOOO......OOOO.....",
+        "...............OOOO......OOOO.....",
+        "..............OOOOO......OOOOO....",
+        "..............OOOOOOOOOOOOOOOO....",
+        "..............OOOOOOOOOOOOOOOO....",
+        "..............OOEEOOOOOOOOEEOO....",
+        "..............OOEEOOOOOOOOEEOO....",
         "..............OOOOOOOOOOOOOOOO....",
         "..............OOOOOOOOOOOOOOOO....",
         "..............OOOOOOOOOOOOOOOO....",
@@ -502,6 +503,32 @@ final class WebFrames {
         "...........OOOOOOOOOOOOOOOOOOO....",
         "...........OOOOOOOOOOOOOOOOOOO....",
         "............OOOOOOOOOOOOOOOOOO....",
+        "..............OOOOOOOOOOOOOOOO....",
+        "..............OO..OO....OO..OO....",
+        "..............OO..OO....OO..OO....",
+        "..............OO..OO....OO..OO...."
+    };
+
+    static final String[] SQUAT = {
+        "..................................",
+        "..................................",
+        "..................................",
+        "..................................",
+        "..................................",
+        "..................................",
+        "..................................",
+        "..................................",
+        "..............OOOOOOOOOOOOOOOO....",
+        "..............OOOOOOOOOOOOOOOO....",
+        "..............OOEEOOOOOOOOEEOO....",
+        "..............OOEEOOOOOOOOEEOO....",
+        "..........OOOOOOOOOOOOOOOOOOOOOOOO",
+        "..........OOOOOOOOOOOOOOOOOOOOOOOO",
+        "..........OOOOOOOOOOOOOOOOOOOOOOOO",
+        "..........OOOOOOOOOOOOOOOOOOOOOOOO",
+        "..............OOOOOOOOOOOOOOOO....",
+        "..............OOOOOOOOOOOOOOOO....",
+        "..............OOOOOOOOOOOOOOOO....",
         "..............OOOOOOOOOOOOOOOO....",
         "..............OO..OO....OO..OO....",
         "..............OO..OO....OO..OO....",

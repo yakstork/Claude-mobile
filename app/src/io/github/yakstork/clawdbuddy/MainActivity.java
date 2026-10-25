@@ -122,7 +122,7 @@ public final class MainActivity extends Activity {
         plp.bottomMargin = dp(48) - Math.round(preview.cellPx() * 0.5f);
         frame.addView(preview, plp);
         preview.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { preview.jump(); }
+            @Override public void onClick(View v) { preview.tapJump(); }
         });
 
         LinearLayout demo = new LinearLayout(this);

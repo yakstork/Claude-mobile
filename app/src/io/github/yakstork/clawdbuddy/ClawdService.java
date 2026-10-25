@@ -616,7 +616,7 @@ public final class ClawdService extends AccessibilityService
                         prefs.edit().putFloat(Prefs.X_FRACTION, Math.max(0f, Math.min(1f, f))).apply();
                         dragging = false;
                     } else {
-                        clawd.jump();
+                        clawd.tapJump();
                         if (Prefs.haptics(prefs) && vibrator != null && vibrator.hasVibrator()) {
                             vibrator.vibrate(Build.VERSION.SDK_INT >= 29
                                     ? VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)
@@ -641,7 +641,7 @@ public final class ClawdService extends AccessibilityService
      */
     private String report(AccessibilityNodeInfo e, List<AccessibilityNodeInfo> nodes, int fromY, int toY) {
         DisplayMetrics dm = getResources().getDisplayMetrics();
-        StringBuilder sb = new StringBuilder("Clawd 0.3 · " + Build.MANUFACTURER + " " + Build.MODEL
+        StringBuilder sb = new StringBuilder("Clawd 0.4 · " + Build.MANUFACTURER + " " + Build.MODEL
                 + " · Android " + Build.VERSION.RELEASE + " · " + dm.widthPixels + "×" + dm.heightPixels
                 + " @" + dm.density + "\n");
         sb.append("над текстом +").append(aboveEdit).append(", слева ").append(leftOfEdit)

@@ -17,15 +17,62 @@ import java.util.Random;
  *  - CLASSIC — вытянутый из версии 0.1.
  * Клетка — целое число пикселей, края чёткие. Пока он стоит, кадры не перерисовываются: моргание
  * и взгляд — редкие отложенные задачи; во время анимаций — 12 кадров в секунду, как на сайте.
+ *
+ * Прыжки ({@link Jump}) — из отрезков «присел» и «в воздухе». В воздухе руки вверх, перед толчком
+ * и при приземлении — присед. Вокруг рисунка запас (сверху и по бокам) под прыжки и сальто: окно
+ * картинки касаний не ловит, так что запас ничему не мешает.
  */
 final class ClawdView extends View {
     enum Mood { IDLE, TYPING, OUTRO, HAPPY, DANCE }
     enum Style { WEB, SQUARE, CLASSIC }
 
+    /** Виды прыжков. Высота и сдвиг — в пикселях стиля claude.ai (в остальных стилях вдвое меньше клеток). */
+    enum Jump {
+        HOP(squat(90), air(400, 6), squat(100)),
+        BIG(squat(150), air(560, 10), squat(130)),
+        DOUBLE(squat(80), air(300, 4), squat(70), air(320, 5), squat(100)),
+        SIDE(squat(80), side(330, 4, 0, 6), squat(70), side(330, 4, 6, 0), squat(90)),
+        FLIP(squat(130), flip(620, 10), squat(130)),
+        SPIN(squat(90), spin(520, 7), squat(100));
+
+        final Seg[] segs;
+        final int ms;
+
+        Jump(Seg... segs) {
+            this.segs = segs;
+            int sum = 0;
+            for (Seg s : segs) sum += s.ms;
+            ms = sum;
+        }
+    }
+
+    static final class Seg {
+        final boolean air, flip, spin;
+        final int ms;
+        final float lift, dx0, dx1;
+
+        Seg(boolean air, int ms, float lift, float dx0, float dx1, boolean flip, boolean spin) {
+            this.air = air;
+            this.ms = ms;
+            this.lift = lift;
+            this.dx0 = dx0;
+            this.dx1 = dx1;
+            this.flip = flip;
+            this.spin = spin;
+        }
+    }
+
+    private static Seg squat(int ms) { return new Seg(false, ms, 0, 0, 0, false, false); }
+    private static Seg air(int ms, float lift) { return new Seg(true, ms, lift, 0, 0, false, false); }
+    private static Seg side(int ms, float lift, float from, float to) { return new Seg(true, ms, lift, from, to, false, false); }
+    private static Seg flip(int ms, float lift) { return new Seg(true, ms, lift, 0, 0, true, false); }
+    private static Seg spin(int ms, float lift) { return new Seg(true, ms, lift, 0, 0, false, true); }
+
+    private static final int PHASE_NONE = 0, PHASE_SQUAT = 1, PHASE_AIR = 2;
+
     private static final long TICK_MS = 83; // 12 кадров в секунду
     private static final int HAPPY_TICKS = 17;
     private static final int DANCE_TICKS = 20;
-    private static final long JUMP_MS = 440;
     private static final int WEB_HEAD = 3;
 
     private static final int LAPTOP = 0xFFC5C9CF;
@@ -45,7 +92,11 @@ final class ClawdView extends View {
     private int tick;
     private int look; // -1 влево, 0 прямо, 1 вправо
     private boolean blinking;
-    private long jumpStart = -1;
+
+    private Jump jump;
+    private Jump lastJump;
+    private long jumpStart;
+    private int jumpDir = 1;
 
     ClawdView(Context c) {
         super(c);
@@ -54,14 +105,23 @@ final class ClawdView extends View {
         recalc();
     }
 
-    // ---- геометрия стиля ----
+    // ---- геометрия стиля (в клетках) ----
 
-    /** Ширина сетки, высота сетки (с запасом под прыжок), ширина «тела» для масштаба, тело в сетке. */
-    private int cols() { return style == Style.WEB ? WebFrames.W : style == Style.SQUARE ? 14 : 16; }
-    private int rows() { return style == Style.WEB ? WebFrames.H + WEB_HEAD : 14; }
+    private int nativeCols() { return style == Style.WEB ? WebFrames.W : style == Style.SQUARE ? 14 : 16; }
+    private int nativeRows() { return style == Style.WEB ? WebFrames.H + WEB_HEAD : 14; }
+    private int padLeft() { return style == Style.WEB ? 0 : 3; }  // в WEB слева и так место под ноутбук
+    private int padRight() { return style == Style.WEB ? 7 : 3; }
+    private int padTop() { return style == Style.WEB ? 8 : 3; }
+    private int cols() { return padLeft() + nativeCols() + padRight(); }
+    private int rows() { return padTop() + nativeRows(); }
     private int bodyCols() { return style == Style.WEB ? 24 : style == Style.SQUARE ? 12 : 16; }
     private int bodyLeft() { return style == Style.WEB ? WebFrames.BODY_LEFT : style == Style.SQUARE ? 1 : 0; }
     private int bodyTop() { return style == Style.WEB ? WEB_HEAD + WebFrames.BODY_TOP : style == Style.SQUARE ? 6 : 5; }
+    /** Центр тела (в клетках рисунка) — вокруг него сальто и разворот. */
+    private float centerX() { return bodyLeft() + bodyCols() / 2f; }
+    private float centerY() { return (bodyTop() + nativeRows()) / 2f; }
+    /** Прыжки задаются в пикселях claude.ai; у квадратного и первого клетка крупнее. */
+    private float jumpScale() { return style == Style.WEB ? 1f : 0.5f; }
 
     void setStyle(Style s) {
         if (style == s) return;
@@ -92,7 +152,8 @@ final class ClawdView extends View {
 
     /** Где в окне стоит сам Clawd — для окна касаний и выравнивания по полю ввода. */
     Rect bodyRect() {
-        return new Rect(bodyLeft() * cell, bodyTop() * cell, (bodyLeft() + bodyCols()) * cell, rows() * cell);
+        int l = (padLeft() + bodyLeft()) * cell;
+        return new Rect(l, (padTop() + bodyTop()) * cell, l + bodyCols() * cell, rows() * cell);
     }
 
     void setColor(int color) {
@@ -122,7 +183,7 @@ final class ClawdView extends View {
     /** Сразу в покой, без доигрывания (когда его прячут). */
     void reset() {
         pending = null;
-        jumpStart = -1;
+        jump = null;
         removeCallbacks(frame);
         start(Mood.IDLE);
     }
@@ -135,16 +196,29 @@ final class ClawdView extends View {
         invalidate();
     }
 
-    void jump() {
+    void jump(Jump kind) {
+        jump = kind;
+        lastJump = kind;
+        jumpDir = random.nextBoolean() ? 1 : -1;
         jumpStart = SystemClock.uptimeMillis();
         removeCallbacks(frame);
         postOnAnimation(frame);
     }
 
-    /** Ответ готов: прыжок с поднятыми руками или короткий танец. */
+    /** По нажатию: случайный прыжок, не такой же, как в прошлый раз. */
+    void tapJump() {
+        Jump[] all = Jump.values();
+        Jump k;
+        do {
+            k = all[random.nextInt(all.length)];
+        } while (k == lastJump);
+        jump(k);
+    }
+
+    /** Ответ готов: радостный прыжок (обычный или высокий) или короткий танец. */
     void celebrate() {
         setMood(random.nextInt(10) < 6 ? Mood.HAPPY : Mood.DANCE);
-        if (mood == Mood.HAPPY) jump();
+        if (mood == Mood.HAPPY) jump(random.nextBoolean() ? Jump.HOP : Jump.BIG);
     }
 
     private final Runnable ticker = new Runnable() {
@@ -154,7 +228,7 @@ final class ClawdView extends View {
                 Mood next = pending != null ? pending : Mood.IDLE;
                 pending = null;
                 start(next);
-                if (next == Mood.HAPPY) jump();
+                if (next == Mood.HAPPY) jump(random.nextBoolean() ? Jump.HOP : Jump.BIG);
                 return;
             }
             if ((mood == Mood.HAPPY && tick >= HAPPY_TICKS) || (mood == Mood.DANCE && tick >= DANCE_TICKS)) {
@@ -169,10 +243,10 @@ final class ClawdView extends View {
     private final Runnable frame = new Runnable() {
         @Override public void run() {
             invalidate();
-            if (jumpStart >= 0 && SystemClock.uptimeMillis() - jumpStart < JUMP_MS) {
+            if (jump != null && SystemClock.uptimeMillis() - jumpStart < jump.ms) {
                 postOnAnimation(this);
             } else {
-                jumpStart = -1;
+                jump = null;
                 invalidate();
             }
         }
@@ -196,7 +270,7 @@ final class ClawdView extends View {
 
     private final Runnable glance = new Runnable() {
         @Override public void run() {
-            if (mood == Mood.IDLE) {
+            if (mood == Mood.IDLE && jump == null) {
                 look = random.nextBoolean() ? 1 : -1;
                 invalidate();
                 postDelayed(unglance, 700 + random.nextInt(700));
@@ -248,52 +322,99 @@ final class ClawdView extends View {
         super.onDetachedFromWindow();
     }
 
+    // ---- прыжок: где он сейчас ----
+
+    private int phase;
+    private float lift, dx, rot, scaleX;
+
+    private void jumpPose() {
+        phase = PHASE_NONE;
+        lift = 0;
+        dx = 0;
+        rot = 0;
+        scaleX = 1;
+        if (jump == null) return;
+        long el = SystemClock.uptimeMillis() - jumpStart;
+        float carry = 0;
+        for (Seg s : jump.segs) {
+            if (el < s.ms) {
+                float t = el / (float) s.ms;
+                if (s.air) {
+                    phase = PHASE_AIR;
+                    lift = (float) Math.sin(Math.PI * t) * s.lift;
+                    dx = s.dx0 + (s.dx1 - s.dx0) * t;
+                    if (s.flip) rot = 360f * smooth(t);
+                    if (s.spin) scaleX = (float) Math.cos(2 * Math.PI * smooth(t));
+                } else {
+                    phase = PHASE_SQUAT;
+                    dx = carry;
+                }
+                return;
+            }
+            el -= s.ms;
+            if (s.air) carry = s.dx1;
+        }
+    }
+
+    private static float smooth(float t) { return t * t * (3 - 2 * t); }
+
     // ---- рисование ----
 
     private int ox, oy;
 
-    /** 0..1 — фаза прыжка, -1 — не прыгает. */
-    private float jumpPhase() {
-        if (jumpStart < 0) return -1;
-        return Math.min(1f, (SystemClock.uptimeMillis() - jumpStart) / (float) JUMP_MS);
-    }
-
     @Override
     protected void onDraw(Canvas canvas) {
-        if (style == Style.WEB) drawWeb(canvas);
-        else if (style == Style.SQUARE) drawSquare(canvas);
-        else drawClassic(canvas);
+        jumpPose();
+        float k = jumpScale();
+        int liftPx = Math.round(lift * k) * cell;
+        int dxPx = Math.round(dx * k) * jumpDir * cell;
+        canvas.save();
+        canvas.translate(padLeft() * cell + dxPx, padTop() * cell - liftPx);
+        boolean turning = rot != 0 || scaleX != 1;
+        if (rot != 0) canvas.rotate(rot * jumpDir, centerX() * cell, centerY() * cell);
+        if (scaleX != 1) canvas.scale(scaleX, 1f, centerX() * cell, centerY() * cell);
+        paint.setAntiAlias(turning); // повёрнутые клетки без сглаживания рвутся
+        // в позе прыжка — только когда он не занят ноутбуком
+        int p = mood == Mood.TYPING || mood == Mood.OUTRO ? PHASE_NONE : phase;
+        if (style == Style.WEB) drawWeb(canvas, p);
+        else if (style == Style.SQUARE) drawSquare(canvas, p);
+        else drawClassic(canvas, p);
+        canvas.restore();
     }
 
     // claude.ai
 
-    private void drawWeb(Canvas c) {
-        float t = jumpPhase();
-        int lift = t < 0 ? 0 : Math.round((float) Math.sin(Math.PI * t) * 6f);
+    private void drawWeb(Canvas c, int p) {
         ox = 0;
-        oy = WEB_HEAD - lift;
+        oy = WEB_HEAD;
         String[] f;
         boolean mirror = false;
-        switch (mood) {
-            case TYPING:
-                f = tick < WebFrames.INTRO.length ? WebFrames.INTRO[tick]
-                        : WebFrames.TYPING[(tick - WebFrames.INTRO.length) % WebFrames.TYPING.length];
-                break;
-            case OUTRO:
-                f = WebFrames.OUTRO[Math.min(tick, WebFrames.OUTRO.length - 1)];
-                break;
-            case HAPPY:
-                f = WebFrames.HAPPY;
-                break;
-            case DANCE:
-                f = WebFrames.DANCE;
-                mirror = (tick / 2) % 2 == 1;
-                break;
-            default:
-                f = WebFrames.STAND;
+        if (p == PHASE_SQUAT) {
+            f = WebFrames.SQUAT;
+        } else if (p == PHASE_AIR) {
+            f = WebFrames.HAPPY;
+        } else {
+            switch (mood) {
+                case TYPING:
+                    f = tick < WebFrames.INTRO.length ? WebFrames.INTRO[tick]
+                            : WebFrames.TYPING[(tick - WebFrames.INTRO.length) % WebFrames.TYPING.length];
+                    break;
+                case OUTRO:
+                    f = WebFrames.OUTRO[Math.min(tick, WebFrames.OUTRO.length - 1)];
+                    break;
+                case HAPPY:
+                    f = WebFrames.HAPPY;
+                    break;
+                case DANCE:
+                    f = WebFrames.DANCE;
+                    mirror = (tick / 2) % 2 == 1;
+                    break;
+                default:
+                    f = WebFrames.STAND;
+            }
         }
         drawMap(c, f, mirror);
-        if (mood == Mood.IDLE && (blinking || look != 0)) {
+        if (p == PHASE_NONE && mood == Mood.IDLE && (blinking || look != 0)) {
             int r = WebFrames.EYE_TOP;
             rect(c, WebFrames.EYE_L, r, WebFrames.EYE_L + 1, r + 1, body);
             rect(c, WebFrames.EYE_R, r, WebFrames.EYE_R + 1, r + 1, body);
@@ -338,14 +459,12 @@ final class ClawdView extends View {
 
     // квадратный (0.2)
 
-    private void drawSquare(Canvas c) {
-        float t = jumpPhase();
-        int lift = t < 0 ? 0 : Math.round((float) Math.sin(Math.PI * t) * 3.5f);
-        boolean squat = t >= 0 && (t < 0.1f || t > 0.92f);
-        boolean dance = mood == Mood.DANCE;
+    private void drawSquare(Canvas c, int p) {
+        boolean squat = p == PHASE_SQUAT;
+        boolean dance = mood == Mood.DANCE && p == PHASE_NONE;
         int danceFrame = tick / 2;
         ox = 1 + (dance ? (danceFrame % 2 == 0 ? -1 : 1) : 0);
-        oy = 6 - lift;
+        oy = 6;
         if (mood == Mood.TYPING) {
             boolean f = (tick / 2) % 2 == 0;
             rect(c, 2, 0, 9, 5, body);
@@ -363,7 +482,7 @@ final class ClawdView extends View {
             return;
         }
         boolean happy = mood == Mood.HAPPY;
-        boolean armsUp = happy || (dance && danceFrame % 2 == 0);
+        boolean armsUp = p == PHASE_AIR || (happy && p != PHASE_SQUAT) || (dance && danceFrame % 2 == 0);
         int s = squat ? 1 : 0;
         rect(c, 2, s, 9, 5 + s, body);
         if (armsUp) {
@@ -378,11 +497,11 @@ final class ClawdView extends View {
             boolean shortLeg = squat || (dance && (danceFrame % 2 == 0) == (i < 2));
             rect(c, legs[i], shortLeg ? 7 : 6, legs[i], 7, body);
         }
-        if (happy) {
+        if (happy && p == PHASE_NONE) {
             px(c, 2, 2 + s, eyes); px(c, 3, 1 + s, eyes); px(c, 4, 2 + s, eyes);
             px(c, 7, 2 + s, eyes); px(c, 8, 1 + s, eyes); px(c, 9, 2 + s, eyes);
         } else if (!blinking) {
-            int l = dance ? 0 : look;
+            int l = dance || p != PHASE_NONE ? 0 : look;
             px(c, 3 + l, 1 + s, eyes);
             px(c, 8 + l, 1 + s, eyes);
         }
@@ -390,14 +509,13 @@ final class ClawdView extends View {
 
     // первый (0.1)
 
-    private void drawClassic(Canvas c) {
-        float t = jumpPhase();
-        int lift = t < 0 ? 0 : Math.round((float) Math.sin(Math.PI * t) * 3.2f);
-        boolean squat = t >= 0 && (t < 0.12f || t > 0.9f);
+    private void drawClassic(Canvas c, int p) {
+        boolean squat = p == PHASE_SQUAT;
         ox = 0;
-        oy = 4 - lift + (squat ? 1 : 0);
+        oy = 4 + (squat ? 1 : 0);
         boolean typing = mood == Mood.TYPING;
-        boolean happy = mood == Mood.HAPPY || mood == Mood.DANCE;
+        boolean armsUp = p == PHASE_AIR || ((mood == Mood.HAPPY || mood == Mood.DANCE) && p != PHASE_SQUAT);
+        boolean happyEyes = (mood == Mood.HAPPY || mood == Mood.DANCE) && p == PHASE_NONE;
         boolean f = (tick / 2) % 2 == 0;
 
         int[] legs = typing ? new int[] {3, 12} : new int[] {3, 5, 10, 12};
@@ -405,7 +523,7 @@ final class ClawdView extends View {
         rect(c, 2, 1, 13, 6, body);
         rect(c, 2, 7, 13, 7, shade);
 
-        if (happy) {
+        if (armsUp) {
             rect(c, 0, 0, 1, 1, body);
             rect(c, 1, 2, 1, 3, body);
             rect(c, 14, 0, 15, 1, body);
@@ -419,15 +537,16 @@ final class ClawdView extends View {
             rect(c, 14, 4, 15, 5, body);
         }
 
-        if (happy) {
+        if (happyEyes) {
             px(c, 4, 4, eyes); px(c, 5, 3, eyes); px(c, 6, 4, eyes);
             px(c, 9, 4, eyes); px(c, 10, 3, eyes); px(c, 11, 4, eyes);
         } else if (typing || blinking) {
             px(c, 5, 4, eyes);
             px(c, 10, 4, eyes);
         } else {
-            rect(c, 5 + look, 3, 5 + look, 4, eyes);
-            rect(c, 10 + look, 3, 10 + look, 4, eyes);
+            int l = p == PHASE_NONE ? look : 0;
+            rect(c, 5 + l, 3, 5 + l, 4, eyes);
+            rect(c, 10 + l, 3, 10 + l, 4, eyes);
         }
 
         if (typing) {
