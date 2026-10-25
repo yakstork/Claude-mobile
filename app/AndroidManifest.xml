@@ -1,16 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.github.yakstork.clawdbuddy"
-    android:versionCode="2"
-    android:versionName="0.2">
+    android:versionCode="3"
+    android:versionName="0.3">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
 
     <uses-permission android:name="android.permission.VIBRATE" />
 
-    <!-- Чтобы кнопка «Открыть Claude» видела официальное приложение. -->
+    <!-- Видеть официальный Claude (кнопка «Открыть Claude») и лаунчер (уход на рабочий стол и в «Недавние»). -->
     <queries>
         <package android:name="com.anthropic.claude" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
     </queries>
 
     <application

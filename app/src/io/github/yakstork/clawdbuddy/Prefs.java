@@ -15,6 +15,7 @@ final class Prefs {
     static final String TYPING = "typing";
     static final String CELEBRATE = "celebrate";
     static final String HAPTICS = "haptics";
+    static final String STYLE = "style";
 
     /** Ширина Clawd в dp для размеров S / M / L (на claude.ai он примерно как S). */
     static final int[] SIZES_DP = {34, 42, 54};
@@ -44,4 +45,12 @@ final class Prefs {
     static boolean typing(SharedPreferences p) { return p.getBoolean(TYPING, true); }
     static boolean celebrate(SharedPreferences p) { return p.getBoolean(CELEBRATE, true); }
     static boolean haptics(SharedPreferences p) { return p.getBoolean(HAPTICS, true); }
+
+    static ClawdView.Style style(SharedPreferences p) {
+        try {
+            return ClawdView.Style.valueOf(p.getString(STYLE, ClawdView.Style.WEB.name()));
+        } catch (IllegalArgumentException e) {
+            return ClawdView.Style.WEB;
+        }
+    }
 }

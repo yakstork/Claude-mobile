@@ -44,6 +44,7 @@ public final class MainActivity extends Activity {
     private Button serviceButton;
     private TextView diag;
     private LinearLayout sizeRow;
+    private LinearLayout styleRow;
     private LinearLayout colorRows;
 
     private final Runnable refresh = new Runnable() {
@@ -111,12 +112,13 @@ public final class MainActivity extends Activity {
         frame.addView(composer, clp);
 
         preview = new ClawdView(this);
-        preview.setSizeDp(96);
+        preview.setStyle(Prefs.style(prefs));
+        preview.setSizeDp(84);
         preview.setColor(Prefs.color(prefs));
         FrameLayout.LayoutParams plp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         plp.gravity = Gravity.BOTTOM | Gravity.START;
-        plp.leftMargin = dp(24);
+        plp.leftMargin = dp(8);
         plp.bottomMargin = dp(48) - Math.round(preview.cellPx() * 0.5f);
         frame.addView(preview, plp);
         preview.setOnClickListener(new View.OnClickListener() {
@@ -177,6 +179,28 @@ public final class MainActivity extends Activity {
     private View lookCard() {
         LinearLayout c = card("Внешний вид");
         c.addView(toggle("Показывать Clawd", Prefs.ENABLED, Prefs.enabled(prefs)));
+
+        c.addView(label("Стиль"));
+        styleRow = new LinearLayout(this);
+        final ClawdView.Style[] styles = {ClawdView.Style.WEB, ClawdView.Style.SQUARE, ClawdView.Style.CLASSIC};
+        String[] styleNames = {"claude.ai", "Квадратный", "Первый"};
+        for (int i = 0; i < styles.length; i++) {
+            final ClawdView.Style st = styles[i];
+            Button b = chip(styleNames[i]);
+            b.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    prefs.edit().putString(Prefs.STYLE, st.name()).apply();
+                    preview.setStyle(st);
+                    preview.setColor(Prefs.color(prefs));
+                    paintStyle();
+                }
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(42), 1f);
+            lp.rightMargin = i < styles.length - 1 ? dp(8) : 0;
+            styleRow.addView(b, lp);
+        }
+        c.addView(styleRow);
+        paintStyle();
 
         c.addView(label("Размер"));
         sizeRow = new LinearLayout(this);
@@ -307,6 +331,17 @@ public final class MainActivity extends Activity {
             startActivity(i);
         } else {
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + ClawdService.CLAUDE)));
+        }
+    }
+
+    private void paintStyle() {
+        String sel = Prefs.style(prefs).name();
+        ClawdView.Style[] styles = {ClawdView.Style.WEB, ClawdView.Style.SQUARE, ClawdView.Style.CLASSIC};
+        for (int i = 0; i < styleRow.getChildCount(); i++) {
+            Button b = (Button) styleRow.getChildAt(i);
+            boolean on = styles[i].name().equals(sel);
+            b.setBackground(round(on ? ACCENT : BG, dp(12), on ? ACCENT : LINE));
+            b.setTextColor(on ? Color.WHITE : TEXT);
         }
     }
 

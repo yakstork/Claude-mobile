@@ -32,9 +32,12 @@ import java.util.regex.Pattern;
  * Следит только за окнами официального Claude и держит Clawd над его полем ввода в отдельном
  * окне поверх. В само приложение ничего не внедряется, его запросы не трогаются.
  *
- * Прятать и показывать решает только проверка списка окон ({@link #claudeRootOnTop}), а не
- * события отдельных приложений: события шлют и скриншотер, и тосты, и само окно Clawd — по ним
- * он мерцал.
+ * Виден, только если Claude — приложение на переднем плане (по событиям окон приложений и
+ * рабочего стола) и его окно сверху в списке окон. События скриншотера, тостов и своего окна не
+ * считаются — по ним он мерцал. Уход на рабочий стол или в «Недавние» прячет его сразу.
+ *
+ * Окон два: картинка (не ловит касания, вся прозрачная часть пропускает нажатия в Claude) и
+ * маленькое невидимое окно ровно по телу Clawd — для тапа и перетаскивания.
  *
  * Задержки: после смены окон ~0,8 с проверяем каждые 40 мс (клавиатура едет, окно открывается);
  * пока Claude открыт и ничего не меняется — раз в 400 мс. Появляется Clawd, когда окно Claude
@@ -47,7 +50,7 @@ public final class ClawdService extends AccessibilityService
 
     /** Кнопка остановки ответа: англ. «Stop response» / «Stop», русская локаль — «Остановить ответ» / «Стоп». */
     private static final Pattern STOP = Pattern.compile(
-            "(?i)^\\s*(stop( response| generating| responding)?|остановить( ответ)?|стоп)\\s*$");
+            "(?i)^\\s*(stop( response| generating| responding)?|остановить( ответ| генерацию)?|стоп)\\s*$");
 
     private static final long OPEN_SETTLE_MS = 150;
     private static final long BURST_MS = 800;
@@ -72,6 +75,14 @@ public final class ClawdService extends AccessibilityService
     private WindowManager wm;
     private ClawdView clawd;
     private WindowManager.LayoutParams lp;
+    private View touch;
+    private WindowManager.LayoutParams tlp;
+    private Rect bodyRect = new Rect();
+    /** Приложение на переднем плане по последнему событию окна приложения; null — ещё не знаем. */
+    private String foreground;
+    private String homePackage;
+    /** С какого момента окно Claude сверху, хотя последним «на передний план» вышло другое приложение. */
+    private long topNotForegroundSince;
     private Vibrator vibrator;
 
     private boolean claudeOnTop;
@@ -91,6 +102,7 @@ public final class ClawdService extends AccessibilityService
     private final Rect edit = new Rect();
     private final Rect box = new Rect();
     private final Rect lastBox = new Rect();
+    private int unstable;
 
     private boolean generating;
     private int notGenerating;
@@ -110,27 +122,44 @@ public final class ClawdService extends AccessibilityService
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
 
-        clawd = new ClawdView(this);
-        applyLook();
-        clawd.setVisibility(View.GONE);
-        clawd.setOnTouchListener(new DragOrTap());
+        android.content.pm.ResolveInfo home = getPackageManager().resolveActivity(
+                new android.content.Intent(android.content.Intent.ACTION_MAIN)
+                        .addCategory(android.content.Intent.CATEGORY_HOME), 0);
+        homePackage = home != null && home.activityInfo != null ? home.activityInfo.packageName : null;
 
-        lp = new WindowManager.LayoutParams(
+        clawd = new ClawdView(this);
+        clawd.setVisibility(View.GONE);
+        touch = new View(this);
+        touch.setVisibility(View.GONE);
+        touch.setOnTouchListener(new DragOrTap());
+
+        lp = overlayParams(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
+        lp.setTitle("Clawd");
+        // пока Clawd не виден, окно касаний ничего не ловит
+        tlp = overlayParams(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
+        tlp.setTitle("Clawd touch");
+        applyLook();
+        wm.addView(clawd, lp);
+        wm.addView(touch, tlp);
+        schedule(0);
+    }
+
+    private WindowManager.LayoutParams overlayParams(int extraFlags) {
+        WindowManager.LayoutParams p = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                        | extraFlags,
                 PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.TOP | Gravity.START;
+        p.gravity = Gravity.TOP | Gravity.START;
         if (Build.VERSION.SDK_INT >= 28) {
-            lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            p.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
         }
-        lp.setTitle("Clawd");
-        wm.addView(clawd, lp);
-        schedule(0);
+        return p;
     }
 
     @Override
@@ -139,6 +168,7 @@ public final class ClawdService extends AccessibilityService
         handler.removeCallbacksAndMessages(null);
         if (prefs != null) prefs.unregisterOnSharedPreferenceChangeListener(this);
         if (clawd != null && clawd.isAttachedToWindow()) wm.removeViewImmediate(clawd);
+        if (touch != null && touch.isAttachedToWindow()) wm.removeViewImmediate(touch);
         status = "служба выключена";
         super.onDestroy();
     }
@@ -154,8 +184,13 @@ public final class ClawdService extends AccessibilityService
     }
 
     private void applyLook() {
+        clawd.setStyle(Prefs.style(prefs));
         clawd.setSizeDp(Prefs.SIZES_DP[Math.max(0, Math.min(2, Prefs.size(prefs)))]);
         clawd.setColor(Prefs.color(prefs));
+        bodyRect = clawd.bodyRect();
+        tlp.width = bodyRect.width();
+        tlp.height = bodyRect.height();
+        if (touch.isAttachedToWindow()) wm.updateViewLayout(touch, tlp);
         if (!Prefs.typing(prefs) && clawd.mood() == ClawdView.Mood.TYPING) {
             clawd.setMood(ClawdView.Mood.IDLE);
         }
@@ -168,6 +203,9 @@ public final class ClawdService extends AccessibilityService
         CharSequence pkg = e.getPackageName();
         if (pkg != null && getPackageName().contentEquals(pkg)) return; // своё окно
         int type = e.getEventType();
+        if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && pkg != null) {
+            trackForeground(e, pkg.toString());
+        }
         if (type == AccessibilityEvent.TYPE_WINDOWS_CHANGED
                 || type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             burstUntil = SystemClock.uptimeMillis() + BURST_MS;
@@ -179,6 +217,28 @@ public final class ClawdService extends AccessibilityService
                 schedule(CONTENT_THROTTLE_MS);
             }
         }
+    }
+
+    /**
+     * Какое приложение на переднем плане. Считаются только окна приложений и рабочий стол
+     * («Недавние» — это тоже он): скриншотер, шторка и тосты — системные окна, их пропускаем.
+     */
+    private void trackForeground(AccessibilityEvent e, String pkg) {
+        String next = null;
+        if (pkg.equals(CLAUDE) || pkg.equals(homePackage)) {
+            next = pkg;
+        } else {
+            int id = e.getWindowId();
+            for (AccessibilityWindowInfo w : getWindows()) {
+                if (w.getId() == id) {
+                    if (w.getType() == AccessibilityWindowInfo.TYPE_APPLICATION) next = pkg;
+                    break;
+                }
+            }
+        }
+        if (next == null) return;
+        foreground = next;
+        if (!CLAUDE.equals(next)) hide("на переднем плане " + next);
     }
 
     /** События содержимого нужны только пока открыт Claude — иначе служба не грузит другие приложения. */
@@ -223,6 +283,25 @@ public final class ClawdService extends AccessibilityService
         }
 
         AccessibilityNodeInfo root = claudeRootOnTop();
+        if (root != null && foreground != null && !CLAUDE.equals(foreground)) {
+            // Чужое окно (например, системный диалог) закрылось, а Claude события не прислал:
+            // если Claude сверху уже 1,5 с, значит он и на переднем плане. Кроме рабочего стола —
+            // в «Недавних» окно Claude может числиться сверху.
+            if (foreground.equals(homePackage)) {
+                topNotForegroundSince = 0;
+                root = null;
+            } else {
+                if (topNotForegroundSince == 0) topNotForegroundSince = now;
+                if (now - topNotForegroundSince >= 1500) {
+                    foreground = CLAUDE;
+                } else {
+                    root = null;
+                    schedule(300);
+                }
+            }
+        } else {
+            topNotForegroundSince = 0;
+        }
         if (root == null) {
             if (claudeOnTop) {
                 claudeOnTop = false;
@@ -258,10 +337,14 @@ public final class ClawdService extends AccessibilityService
             updateGenerating();
         }
 
-        boolean stable = box.equals(lastBox);
+        int tol = 3;
+        boolean stable = Math.abs(box.left - lastBox.left) <= tol && Math.abs(box.top - lastBox.top) <= tol
+                && Math.abs(box.right - lastBox.right) <= tol;
         lastBox.set(box);
+        unstable = stable ? 0 : unstable + 1;
         if (!shown) {
-            if (now - claudeOnTopSince >= OPEN_SETTLE_MS && stable) show(now);
+            // не ждём бесконечно, если что-то рядом всё время шевелится
+            if (now - claudeOnTopSince >= OPEN_SETTLE_MS && (stable || unstable > 6)) show(now);
         } else if (!dragging) {
             place(true);
         }
@@ -350,10 +433,10 @@ public final class ClawdService extends AccessibilityService
     }
 
     /**
-     * Где верхняя кромка рамки композера. Рамка как узел может и не существовать (Compose), поэтому:
-     * сначала невысокие предки текстового поля, потом — элементы, стоящие стопкой прямо над полем
-     * и начинающиеся у его левого края (ряд прикреплённых фото и файлов). Кнопка «вниз» по центру
-     * и сообщения чата под это не подходят.
+     * Где верхняя кромка рамки композера: самый внешний предок текстового поля, который ещё
+     * похож на рамку — содержит поле, не во весь экран по ширине и не выше 45% экрана. В Claude
+     * это узел, в который входят и прикреплённые фото, и ряд кнопок под полем. Полосы на всю
+     * ширину над полем (там кнопка «Прокрутить вниз») сюда не попадают.
      */
     private void measureFrame(AccessibilityNodeInfo e, List<AccessibilityNodeInfo> nodes, long now) {
         DisplayMetrics dm = getResources().getDisplayMetrics();
@@ -361,36 +444,18 @@ public final class ClawdService extends AccessibilityService
         Rect r = new Rect();
         e.getBoundsInScreen(er);
         int top = er.top, left = er.left, right = er.right;
-        int slack = Math.round(24 * dm.density);
         int gap = Math.round(16 * dm.density);
-        int pad = Math.round(8 * dm.density);
 
         AccessibilityNodeInfo p = e.getParent();
         for (int i = 0; i < 6 && p != null; i++) {
             p.getBoundsInScreen(r);
-            if (r.height() > dm.heightPixels * 0.45f || r.top > er.top || r.bottom < er.bottom - 2) break;
+            if (r.height() > dm.heightPixels * 0.45f || r.width() >= dm.widthPixels * 0.98f
+                    || r.top > er.top || r.bottom < er.bottom - 2) break;
             top = Math.min(top, r.top);
             left = Math.min(left, r.left);
             right = Math.max(right, r.right);
             p = p.getParent();
         }
-
-        boolean stacked = false;
-        for (boolean grew = true; grew; ) {
-            grew = false;
-            for (AccessibilityNodeInfo n : nodes) {
-                if (n == null || n == e || !n.isVisibleToUser()) continue;
-                n.getBoundsInScreen(r);
-                if (r.isEmpty() || r.height() > dm.heightPixels / 3) continue;
-                if (r.bottom > er.bottom || r.top >= top || r.bottom < top - gap) continue;
-                if (r.left > er.left + slack || r.right < er.left + slack) continue;
-                top = r.top;
-                left = Math.min(left, r.left);
-                stacked = true;
-                grew = true;
-            }
-        }
-        if (stacked) top -= pad; // у вложений свой отступ от кромки рамки
 
         aboveEdit = er.top - top;
         leftOfEdit = er.left - left;
@@ -439,10 +504,10 @@ public final class ClawdService extends AccessibilityService
 
     // ---- окно Clawd ----
 
+    /** X окна так, чтобы само тело (без ноутбука и запаса) стояло на своём месте вдоль рамки. */
     private int targetX() {
-        int w = clawd.widthPx();
         float f = Math.max(0f, Math.min(1f, Prefs.xFraction(prefs)));
-        return box.left + Math.round(f * Math.max(0, box.width() - w));
+        return box.left + Math.round(f * Math.max(0, box.width() - bodyRect.width())) - bodyRect.left;
     }
 
     private int targetY() {
@@ -452,10 +517,24 @@ public final class ClawdService extends AccessibilityService
         return box.top - clawd.heightPx() + overlap - Math.round(Prefs.yOffsetDp(prefs) * density);
     }
 
-    private void show(long now) {
-        lp.x = targetX();
-        lp.y = targetY();
+    private void setTouchable(boolean on) {
+        if (on) tlp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+        else tlp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+        wm.updateViewLayout(touch, tlp);
+    }
+
+    /** Двигает картинку и окно касаний вместе. */
+    private void moveTo(int x, int y) {
+        lp.x = x;
+        lp.y = y;
         wm.updateViewLayout(clawd, lp);
+        tlp.x = x + bodyRect.left;
+        tlp.y = y + bodyRect.top;
+        wm.updateViewLayout(touch, tlp);
+    }
+
+    private void show(long now) {
+        moveTo(targetX(), targetY());
         clawd.animate().cancel();
         if (now - hiddenAt < REAPPEAR_MS) {
             clawd.setAlpha(1f);
@@ -464,6 +543,8 @@ public final class ClawdService extends AccessibilityService
             clawd.animate().alpha(1f).setDuration(120).start();
         }
         clawd.setVisibility(View.VISIBLE);
+        touch.setVisibility(View.VISIBLE);
+        setTouchable(true);
         shown = true;
         if (generating && Prefs.typing(prefs)) clawd.setMood(ClawdView.Mood.TYPING);
     }
@@ -476,7 +557,9 @@ public final class ClawdService extends AccessibilityService
         if (mover != null) mover.cancel();
         clawd.animate().cancel();
         clawd.setVisibility(View.GONE);
-        if (clawd.mood() != ClawdView.Mood.IDLE) clawd.setMood(ClawdView.Mood.IDLE);
+        touch.setVisibility(View.GONE);
+        setTouchable(false);
+        clawd.reset();
         generating = false;
     }
 
@@ -487,20 +570,16 @@ public final class ClawdService extends AccessibilityService
         if (Math.abs(fromX - toX) <= 1 && Math.abs(fromY - toY) <= 1) return;
         if (mover != null) mover.cancel();
         if (!animate) {
-            lp.x = toX;
-            lp.y = toY;
-            wm.updateViewLayout(clawd, lp);
+            moveTo(toX, toY);
             return;
         }
         mover = ValueAnimator.ofFloat(0f, 1f);
-        mover.setDuration(Math.abs(toY - fromY) > clawd.heightPx() * 3 ? 110 : 70);
+        mover.setDuration(Math.abs(toY - fromY) > clawd.heightPx() * 2 ? 110 : 70);
         mover.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
             @Override public void onAnimationUpdate(ValueAnimator a) {
                 if (!shown) return;
                 float t = (Float) a.getAnimatedValue();
-                lp.x = Math.round(fromX + (toX - fromX) * t);
-                lp.y = Math.round(fromY + (toY - fromY) * t);
-                wm.updateViewLayout(clawd, lp);
+                moveTo(Math.round(fromX + (toX - fromX) * t), Math.round(fromY + (toY - fromY) * t));
             }
         });
         mover.start();
@@ -525,15 +604,16 @@ public final class ClawdService extends AccessibilityService
                     float dx = e.getRawX() - downX;
                     if (!dragging && Math.abs(dx) > slop) dragging = true;
                     if (dragging) {
-                        int w = clawd.widthPx();
-                        lp.x = Math.max(box.left, Math.min(box.right - w, Math.round(startX + dx)));
-                        wm.updateViewLayout(clawd, lp);
+                        int minX = box.left - bodyRect.left;
+                        int maxX = box.right - bodyRect.right;
+                        moveTo(Math.max(minX, Math.min(maxX, Math.round(startX + dx))), lp.y);
                     }
                     return true;
                 case MotionEvent.ACTION_UP:
                     if (dragging) {
-                        int span = Math.max(1, box.width() - clawd.widthPx());
-                        prefs.edit().putFloat(Prefs.X_FRACTION, (lp.x - box.left) / (float) span).apply();
+                        int span = Math.max(1, box.width() - bodyRect.width());
+                        float f = (lp.x + bodyRect.left - box.left) / (float) span;
+                        prefs.edit().putFloat(Prefs.X_FRACTION, Math.max(0f, Math.min(1f, f))).apply();
                         dragging = false;
                     } else {
                         clawd.jump();
@@ -561,7 +641,7 @@ public final class ClawdService extends AccessibilityService
      */
     private String report(AccessibilityNodeInfo e, List<AccessibilityNodeInfo> nodes, int fromY, int toY) {
         DisplayMetrics dm = getResources().getDisplayMetrics();
-        StringBuilder sb = new StringBuilder("Clawd 0.2 · " + Build.MANUFACTURER + " " + Build.MODEL
+        StringBuilder sb = new StringBuilder("Clawd 0.3 · " + Build.MANUFACTURER + " " + Build.MODEL
                 + " · Android " + Build.VERSION.RELEASE + " · " + dm.widthPixels + "×" + dm.heightPixels
                 + " @" + dm.density + "\n");
         sb.append("над текстом +").append(aboveEdit).append(", слева ").append(leftOfEdit)
