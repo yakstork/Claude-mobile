@@ -50,7 +50,14 @@ public final class ClawdService extends AccessibilityService
 
     /** Кнопка остановки ответа: англ. «Stop response» / «Stop», русская локаль — «Остановить ответ» / «Стоп». */
     private static final Pattern STOP = Pattern.compile(
-            "(?i)^\\s*(stop( response| generating| responding)?|остановить( ответ| генерацию)?|стоп)\\s*$");
+            "(?iu)^\\s*(stop( response| generating| responding)?|остановить( ответ| генерацию)?|стоп)\\s*$");
+
+    /** Подсказка поля, пока Claude работает: «Поставьте сообщение в очередь…», «Queue a message…». */
+    private static final Pattern QUEUE = Pattern.compile("(?iu)(сообщение в очередь|queue a message|queue message)");
+    /** Строка состояния Code: «57 с · думает…», «1 мин 3 с · …», «Думает…», «Claude работает…», «Thinking…». */
+    private static final Pattern WORKING = Pattern.compile(
+            "(?iu)^\\s*((\\d+\\s*(мин|min|m)\\s*)?\\d+\\s*(с|сек|s)\\s*·"
+            + "|(думает|всё ещё думает|почти додумал|claude работает|в работе|thinking|working).*…)");
 
     private static final long OPEN_SETTLE_MS = 150;
     private static final long BURST_MS = 800;
@@ -69,6 +76,9 @@ public final class ClawdService extends AccessibilityService
     static volatile String status = "служба запущена, Claude не открыт";
     /** Последний отчёт об области поля ввода — для кнопки «Скопировать отчёт». */
     static volatile String lastReport;
+    /** Список окон на экране, обновляется раз в 3 с — часть отчёта. */
+    static volatile String lastWindows = "";
+    private long lastWindowsAt;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
@@ -231,7 +241,10 @@ public final class ClawdService extends AccessibilityService
             int id = e.getWindowId();
             for (AccessibilityWindowInfo w : getWindows()) {
                 if (w.getId() == id) {
-                    if (w.getType() == AccessibilityWindowInfo.TYPE_APPLICATION) next = pkg;
+                    Rect r = new Rect();
+                    w.getBoundsInScreen(r);
+                    // превью скриншота и прочие плавающие окна приложений — не уход из Claude
+                    if (w.getType() == AccessibilityWindowInfo.TYPE_APPLICATION && coversScreen(r)) next = pkg;
                     break;
                 }
             }
@@ -285,14 +298,14 @@ public final class ClawdService extends AccessibilityService
         AccessibilityNodeInfo root = claudeRootOnTop();
         if (root != null && foreground != null && !CLAUDE.equals(foreground)) {
             // Чужое окно (например, системный диалог) закрылось, а Claude события не прислал:
-            // если Claude сверху уже 1,5 с, значит он и на переднем плане. Кроме рабочего стола —
+            // если Claude сверху уже 0,6 с, значит он и на переднем плане. Кроме рабочего стола —
             // в «Недавних» окно Claude может числиться сверху.
             if (foreground.equals(homePackage)) {
                 topNotForegroundSince = 0;
                 root = null;
             } else {
                 if (topNotForegroundSince == 0) topNotForegroundSince = now;
-                if (now - topNotForegroundSince >= 1500) {
+                if (now - topNotForegroundSince >= 600) {
                     foreground = CLAUDE;
                 } else {
                     root = null;
@@ -360,8 +373,9 @@ public final class ClawdService extends AccessibilityService
     }
 
     /**
-     * Корень Claude, если его окно — верхнее окно приложения и его не закрывает шторка.
-     * Большие системные окна без фокуса (скриншот, его превью) Clawd не прячут.
+     * Корень Claude, если его окно на экране и его не закрывает другое окно почти целиком
+     * (приложение, рабочий стол, «Недавние», раскрытая шторка). Мелкие окна поверх — превью
+     * скриншота, плавающие кнопки — Clawd не прячут: его окно и так выше всех.
      */
     private AccessibilityNodeInfo claudeRootOnTop() {
         List<AccessibilityWindowInfo> windows = new ArrayList<AccessibilityWindowInfo>(getWindows());
@@ -370,25 +384,57 @@ public final class ClawdService extends AccessibilityService
                 return b.getLayer() - a.getLayer();
             }
         });
-        DisplayMetrics dm = getResources().getDisplayMetrics();
+        long now = SystemClock.uptimeMillis();
+        boolean dump = now - lastWindowsAt >= REPORT_MS;
+        StringBuilder sb = dump ? new StringBuilder() : null;
+        AccessibilityNodeInfo result = null;
+        boolean decided = false;
         Rect r = new Rect();
         for (AccessibilityWindowInfo w : windows) {
+            if (decided && sb == null) break;
             int type = w.getType();
-            if (type == AccessibilityWindowInfo.TYPE_APPLICATION) {
-                AccessibilityNodeInfo root = w.getRoot();
-                if (root == null) return null;
-                CharSequence pkg = root.getPackageName();
-                return pkg != null && CLAUDE.contentEquals(pkg) ? root : null;
+            w.getBoundsInScreen(r);
+            AccessibilityNodeInfo root = type == AccessibilityWindowInfo.TYPE_APPLICATION ? w.getRoot() : null;
+            CharSequence pkg = root != null ? root.getPackageName() : null;
+            if (sb != null) {
+                sb.append("  ").append(windowType(type)).append(' ').append(pkg != null ? pkg : w.getTitle())
+                        .append(w.isFocused() ? " [фокус]" : "").append(' ').append(r.toShortString()).append('\n');
             }
-            if (type == AccessibilityWindowInfo.TYPE_SYSTEM && w.isFocused()) {
-                w.getBoundsInScreen(r);
+            if (decided) continue; // дальше — только для отчёта
+            if (type == AccessibilityWindowInfo.TYPE_APPLICATION) {
+                if (pkg != null && CLAUDE.contentEquals(pkg)) {
+                    result = root;
+                    decided = true;
+                } else if (coversScreen(r)) {
+                    decided = true;
+                }
+            } else if (type == AccessibilityWindowInfo.TYPE_SYSTEM && w.isFocused() && coversScreen(r)) {
                 CharSequence title = w.getTitle();
                 boolean screenshot = title != null && title.toString().toLowerCase().contains("screenshot");
-                // раскрытая шторка — во весь экран и с фокусом
-                if (r.height() > dm.heightPixels / 3 && !screenshot) return null;
+                if (!screenshot) decided = true; // раскрытая шторка
             }
         }
-        return null;
+        if (sb != null) {
+            lastWindowsAt = now;
+            lastWindows = sb.toString();
+        }
+        return result;
+    }
+
+    /** Окно закрывает больше 60% экрана. */
+    private boolean coversScreen(Rect r) {
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        return (long) r.width() * r.height() > 0.6 * dm.widthPixels * dm.heightPixels;
+    }
+
+    private static String windowType(int t) {
+        switch (t) {
+            case AccessibilityWindowInfo.TYPE_APPLICATION: return "прил";
+            case AccessibilityWindowInfo.TYPE_INPUT_METHOD: return "клав";
+            case AccessibilityWindowInfo.TYPE_SYSTEM: return "сист";
+            case AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY: return "спецв";
+            default: return "тип" + t;
+        }
     }
 
     // ---- поле ввода ----
@@ -461,28 +507,33 @@ public final class ClawdService extends AccessibilityService
         leftOfEdit = er.left - left;
         rightOfEdit = right - er.right;
 
-        // «Стоп» рядом с полем ввода — заодно из того же обхода
+        // Признак «Claude отвечает» — заодно из того же обхода: кнопка «Стоп» или подсказка
+        // «…в очередь» у поля ввода (обычный чат и Code), а в Code ещё и строка с таймером
+        // («57 с · думает…») внизу ленты сообщений.
         stopNode = null;
         int near = Math.round(150 * dm.density);
         for (AccessibilityNodeInfo n : nodes) {
-            if (n == null || !n.isVisibleToUser() || !isStop(n)) continue;
+            if (n == null || !n.isVisibleToUser() || !isBusy(n)) continue;
             n.getBoundsInScreen(r);
             if (r.bottom >= top - gap && r.top <= er.bottom + near) {
                 stopNode = n;
                 break;
             }
         }
+        StringBuilder tail = now - lastReportAt >= REPORT_MS ? new StringBuilder() : null;
+        if (stopNode == null) stopNode = busyInFeed(nodes, top, tail);
 
-        if (now - lastReportAt >= REPORT_MS) {
+        if (tail != null) {
             lastReportAt = now;
-            lastReport = report(e, nodes, top, er.bottom + near);
+            lastReport = report(e, nodes, top, er.bottom + near) + "низ ленты:\n" + tail;
         }
     }
 
     // ---- «Claude печатает» ----
 
     private void updateGenerating() {
-        boolean found = stopNode != null && stopNode.refresh() && stopNode.isVisibleToUser() && isStop(stopNode);
+        boolean found = (stopNode != null && stopNode.refresh() && stopNode.isVisibleToUser() && isBusy(stopNode))
+                || (editNode != null && isBusy(editNode));
         if (found) {
             notGenerating = 0;
             if (!generating) {
@@ -500,6 +551,51 @@ public final class ClawdService extends AccessibilityService
         CharSequence d = n.getContentDescription();
         CharSequence t = n.getText();
         return (d != null && STOP.matcher(d).matches()) || (t != null && STOP.matcher(t).matches());
+    }
+
+    /** Кнопка «Стоп», подсказка «…в очередь» (текст, подсказка или описание поля) или строка состояния с таймером. */
+    private static boolean isBusy(AccessibilityNodeInfo n) {
+        if (isStop(n)) return true;
+        CharSequence t = n.getText();
+        CharSequence h = Build.VERSION.SDK_INT >= 26 ? n.getHintText() : null;
+        CharSequence d = n.getContentDescription();
+        return (t != null && (QUEUE.matcher(t).find() || WORKING.matcher(t).find()))
+                || (h != null && QUEUE.matcher(h).find())
+                || (d != null && QUEUE.matcher(d).find());
+    }
+
+    /**
+     * Строка состояния Claude Code в ленте сообщений, прямо над полем ввода. Ленту целиком не
+     * обходим — только элементы у её нижнего края (видимые, рядом с полем ввода).
+     */
+    private AccessibilityNodeInfo busyInFeed(List<AccessibilityNodeInfo> nodes, int composerTop, StringBuilder tail) {
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        int reach = Math.round(260 * dm.density);
+        Rect r = new Rect();
+        AccessibilityNodeInfo found = null;
+        for (AccessibilityNodeInfo list : nodes) {
+            if (list == null || !list.isScrollable() || !list.isVisibleToUser()) continue;
+            list.getBoundsInScreen(r);
+            if (r.height() < dm.heightPixels / 4 || r.top > composerTop) continue;
+            ArrayList<AccessibilityNodeInfo> queue = new ArrayList<AccessibilityNodeInfo>();
+            for (int c = 0; c < list.getChildCount(); c++) queue.add(list.getChild(c));
+            for (int i = 0; i < queue.size() && i < 150; i++) {
+                AccessibilityNodeInfo n = queue.get(i);
+                if (n == null) continue;
+                n.getBoundsInScreen(r);
+                if (r.bottom < composerTop - reach || r.top > composerTop) continue; // далеко от поля или под ним
+                CharSequence t = n.getText();
+                if (tail != null && t != null && t.length() <= 48) {
+                    tail.append("  ").append(cut(t)).append(' ').append(r.toShortString()).append('\n');
+                }
+                if (found == null && n.isVisibleToUser() && isBusy(n)) {
+                    found = n;
+                    if (tail == null) return found;
+                }
+                for (int c = 0; c < n.getChildCount(); c++) queue.add(n.getChild(c));
+            }
+        }
+        return found;
     }
 
     // ---- окно Clawd ----
@@ -641,7 +737,7 @@ public final class ClawdService extends AccessibilityService
      */
     private String report(AccessibilityNodeInfo e, List<AccessibilityNodeInfo> nodes, int fromY, int toY) {
         DisplayMetrics dm = getResources().getDisplayMetrics();
-        StringBuilder sb = new StringBuilder("Clawd 0.4 · " + Build.MANUFACTURER + " " + Build.MODEL
+        StringBuilder sb = new StringBuilder("Clawd 0.5 · " + Build.MANUFACTURER + " " + Build.MODEL
                 + " · Android " + Build.VERSION.RELEASE + " · " + dm.widthPixels + "×" + dm.heightPixels
                 + " @" + dm.density + "\n");
         sb.append("над текстом +").append(aboveEdit).append(", слева ").append(leftOfEdit)

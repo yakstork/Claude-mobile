@@ -285,10 +285,13 @@ public final class MainActivity extends Activity {
         copy.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 String r = ClawdService.lastReport;
-                if (r == null) {
-                    toast("Сначала открой чат в Claude, чтобы Clawd там появился");
+                String w = ClawdService.lastWindows;
+                if (r == null && w.isEmpty()) {
+                    toast("Сначала открой чат в Claude");
                     return;
                 }
+                r = (r != null ? r : "Clawd ни разу не находил поле ввода\n" + ClawdService.status + "\n")
+                        + "окна (сверху вниз, на момент последней проверки):\n" + w;
                 ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
                 cm.setPrimaryClip(ClipData.newPlainText("Clawd", r));
                 toast("Скопировано — пришли, если что-то работает не так");
