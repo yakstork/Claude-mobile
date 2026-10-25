@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Clawd</string>
+    <string name="a11y_description">Показывает Clawd над полем ввода официального приложения Claude. Служба смотрит только окна Claude: где поле ввода и есть ли кнопка «Стоп». Ничего не сохраняет и никуда не отправляет, в само приложение Claude не вмешивается.</string>
+</resources>
