@@ -39,7 +39,7 @@ mkdir -p "$BUILD/gen" "$BUILD/classes"
 echo "› тесты"
 mkdir -p "$BUILD/test"
 javac -nowarn -encoding UTF-8 -d "$BUILD/test" \
-  "$APP/src/io/github/yakstork/clawdbuddy/Logic.java" "$APP/test/io/github/yakstork/clawdbuddy/LogicTest.java"
+  "$APP/src/io/github/yakstork/clawdbuddy/Logic.java" "$APP/src/io/github/yakstork/clawdbuddy/WebFrames.java" "$APP/test/io/github/yakstork/clawdbuddy/LogicTest.java"
 java -Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -cp "$BUILD/test" io.github.yakstork.clawdbuddy.LogicTest
 
 echo "› ресурсы"

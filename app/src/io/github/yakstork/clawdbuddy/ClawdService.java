@@ -133,6 +133,8 @@ public final class ClawdService extends AccessibilityService
     private long sleptAt;
     /** Когда последний раз нажали «Стоп» в Claude; 0 — не нажимали. */
     private long stopPressedAt;
+    /** Сколько плашек «ответ прерван» было на экране, когда ответ начался. */
+    private int noticesAtStart;
     /** Прошлое поле ввода и длина его текста — сам текст не хранится. */
     private AccessibilityNodeInfo typedNode;
     private int typedLen;
@@ -661,18 +663,38 @@ public final class ClawdService extends AccessibilityService
             notGenerating = 0;
             if (!generating) {
                 generating = true;
+                noticesAtStart = interruptedNotices();
                 if (Prefs.typing(prefs) && shown) clawd.setMood(ClawdView.Mood.TYPING);
             }
         } else if (generating && ++notGenerating >= 2) {
             generating = false;
             long now = SystemClock.uptimeMillis();
-            boolean stopped = Logic.stoppedByUser(now, stopPressedAt);
+            // событие нажатия Claude присылает не всегда — второй признак: в ленте появилась плашка
+            boolean stopped = Logic.stoppedByUser(now, stopPressedAt) || interruptedNotices() > noticesAtStart;
             stopPressedAt = 0;
+            journal.add(now, stopped ? "ответ остановлен" : "ответ готов");
             if (Prefs.count(prefs) && !stopped) countAnswer();
             if (stopped && shown && Prefs.stopReact(prefs)) clawd.startle();
             else if (Prefs.celebrate(prefs) && shown) clawd.celebrate();
             else clawd.setMood(ClawdView.Mood.IDLE);
         }
+    }
+
+    /**
+     * Сколько на экране плашек «Ответ Claude был прерван». Обходит и ленту сообщений, поэтому
+     * зовётся только дважды за ответ — в начале и в конце; текст сообщений никуда не сохраняется.
+     */
+    private int interruptedNotices() {
+        if (!Prefs.stopReact(prefs) && !Prefs.count(prefs)) return 0;
+        ArrayList<AccessibilityNodeInfo> nodes = new ArrayList<AccessibilityNodeInfo>(claudeRoots);
+        int count = 0;
+        for (int i = 0; i < nodes.size() && i < 600; i++) {
+            AccessibilityNodeInfo n = nodes.get(i);
+            if (n == null || !n.isVisibleToUser()) continue;
+            if (Logic.isInterrupted(n.getText())) count++;
+            for (int c = 0; c < n.getChildCount(); c++) nodes.add(n.getChild(c));
+        }
+        return count;
     }
 
     /** +1 к счётчикам ответов: за сегодня (счёт заново при смене дня) и за всё время. */

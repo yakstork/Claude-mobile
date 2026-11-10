@@ -486,11 +486,11 @@ final class ClawdView extends View {
                     f = walking && mood == Mood.IDLE ? WebFrames.WALK[tick % 2] : WebFrames.STAND;
             }
         }
-        boolean laptop = mood == Mood.TYPING || mood == Mood.OUTRO; // за ноутбуком — без шапки
-        // голова в кадрах — колонки 14..29; в приседе и танце строка верха на пиксель ниже
-        int top = WebFrames.BODY_TOP + (f == WebFrames.SQUAT || f == WebFrames.DANCE ? 1 : 0);
-        // шапка — до тела: поднятые в прыжке руки остаются поверх неё
-        if (!laptop) drawHat(c, 14, 29, top, 2);
+        // голова в каждом кадре на своём месте (за ноутбуком он в профиль и ниже)
+        int[] h = WebFrames.head(f);
+        int top = h != null ? h[0] : WebFrames.BODY_TOP;
+        // шапка — до тела: поднятые в прыжке руки остаются поверх неё; за ноутбуком он смотрит влево
+        if (h != null) drawHat(c, h[1], h[2], top, 2, mood == Mood.TYPING || mood == Mood.OUTRO);
         drawMap(c, f, mirror);
         boolean sleep = mood == Mood.SLEEP;
         if (p == PHASE_NONE && (mood == Mood.IDLE || sleep) && (blinking || sleep || look != 0 || eyesDown)) {
@@ -560,7 +560,7 @@ final class ClawdView extends View {
             rect(c, 3, 3, 8, 6, LAPTOP);
             rect(c, 5, 4, 6, 4, LAPTOP_LOGO);
             rect(c, 1, 7, 10, 7, LAPTOP_BASE);
-            drawHat(c, 2, 9, 0, 1);
+            drawHat(c, 2, 9, 0, 1, false);
             return;
         }
         boolean happy = mood == Mood.HAPPY;
@@ -589,7 +589,7 @@ final class ClawdView extends View {
             px(c, 8 + l, 1 + s + d, eyes);
         }
         if (mood == Mood.SLEEP) drawSleep(c, 9, s, 1);
-        drawHat(c, 2, 9, s, 1);
+        drawHat(c, 2, 9, s, 1, false);
     }
 
     // первый (0.1)
@@ -641,7 +641,7 @@ final class ClawdView extends View {
             rect(c, 3, 9, 12, 9, LAPTOP_BASE);
         }
         if (mood == Mood.SLEEP) drawSleep(c, 13, 1, 1);
-        drawHat(c, 2, 13, 1, 1);
+        drawHat(c, 2, 13, 1, 1, false);
     }
 
     /** Шаг: ноги пары 1+3 и 2+4 по очереди короче на клетку. */
@@ -656,14 +656,15 @@ final class ClawdView extends View {
 
     /**
      * Шапка поверх головы. hl..hr — колонки головы, top — её верхняя строка, u — клеток в
-     * «большой» клетке стиля (в WEB клетка вдвое мельче — всё вдвое крупнее).
+     * «большой» клетке стиля (в WEB клетка вдвое мельче — всё вдвое крупнее). left — козырёк влево.
      */
-    private void drawHat(Canvas c, int hl, int hr, int top, int u) {
+    private void drawHat(Canvas c, int hl, int hr, int top, int u, boolean left) {
         int mid = (hl + hr + 1) / 2;
         switch (hat) {
             case CAP:
                 rect(c, hl + u, top - 2 * u, hr - u, top - 1, HAT_BLUE);
-                rect(c, hr - u + 1, top - u, hr + u, top - 1, HAT_BRIM); // козырёк вбок
+                if (left) rect(c, hl - u, top - u, hl + u - 1, top - 1, HAT_BRIM); // козырёк вбок
+                else rect(c, hr - u + 1, top - u, hr + u, top - 1, HAT_BRIM);
                 break;
             case HEADPHONES:
                 rect(c, hl, top - u, hr, top - 1, HAT_DARK); // дуга

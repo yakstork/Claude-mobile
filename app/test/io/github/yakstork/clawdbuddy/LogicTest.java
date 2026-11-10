@@ -22,6 +22,7 @@ public final class LogicTest {
 
     public static void main(String[] args) {
         busy();
+        head();
         frame();
         framePad();
         front();
@@ -88,6 +89,24 @@ public final class LogicTest {
         check(Logic.framePad(2453, -1, 3.5f) == 0, "framePad: без кнопок");
         // что-то высокое рядом — не рамка, отступ не раздуваем
         check(Logic.framePad(1000, 1500, 3.5f) == 0, "framePad: слишком большой выступ игнорируется");
+    }
+
+    private static void checkHead(String name, String[] f, int top, int l, int r) {
+        int[] h = WebFrames.head(f);
+        check(h != null && h[0] == top && h[1] == l && h[2] == r,
+                "head: " + name + " — " + java.util.Arrays.toString(h));
+    }
+
+    /** Голова в кадрах claude.ai — куда сажать шапку. */
+    private static void head() {
+        checkHead("стоит", WebFrames.STAND, 7, 14, 29);
+        checkHead("руки вверх — не голова", WebFrames.HAPPY, 7, 14, 29);
+        checkHead("присед", WebFrames.SQUAT, 8, 14, 29);
+        checkHead("печатает, в профиль", WebFrames.TYPE1, 9, 12, 27);
+        checkHead("садится", WebFrames.SIT, 8, 12, 27);
+        check(Logic.isInterrupted("Ответ Claude был прерван."), "isInterrupted: рус");
+        check(Logic.isInterrupted("Claude's response was interrupted."), "isInterrupted: англ");
+        check(!Logic.isInterrupted("Ответ готов") && !Logic.isInterrupted(null), "isInterrupted: нет");
     }
 
     private static void busy() {

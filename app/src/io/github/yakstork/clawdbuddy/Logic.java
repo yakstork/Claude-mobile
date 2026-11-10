@@ -33,6 +33,13 @@ final class Logic {
         return s != null && STOP.matcher(s).matches();
     }
 
+    /** Плашка в ленте после остановки: «Ответ Claude был прерван.» / «…response was interrupted». */
+    private static final Pattern INTERRUPTED = Pattern.compile("(?iu)(ответ claude был прерван|response was interrupted)");
+
+    static boolean isInterrupted(CharSequence s) {
+        return s != null && INTERRUPTED.matcher(s).find();
+    }
+
     /** «Стоп» нажат не раньше чем 3 с назад (stopPressedAt == 0 — не нажимали). */
     static boolean stoppedByUser(long now, long stopPressedAt) {
         return stopPressedAt > 0 && now - stopPressedAt <= 3000;
