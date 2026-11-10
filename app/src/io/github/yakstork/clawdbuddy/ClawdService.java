@@ -58,16 +58,18 @@ public final class ClawdService extends AccessibilityService
     private static final long FULL_FIND_MS = 250;
     /** Спрятался и снова виден быстрее этого — без плавного появления, чтобы не мигал. */
     private static final long REAPPEAR_MS = 800;
-    private static final long REPORT_MS = 3000;
+    private static final long REPORT_MS = 1000;
 
     static volatile ClawdService instance;
     /** Последнее состояние — для экрана «Проверка». */
     static volatile String status = "служба запущена, Claude не открыт";
     /** Последний отчёт об области поля ввода — для кнопки «Скопировать отчёт». */
     static volatile String lastReport;
-    /** Список окон на экране, обновляется раз в 3 с — часть отчёта. */
+    /** Список окон на экране, обновляется раз в секунду — часть отчёта. */
     static volatile String lastWindows = "";
     private long lastWindowsAt;
+    /** Окно, закрывшее Claude при последней проверке, — для журнала. */
+    private String blocker;
     /** Журнал событий — часть отчёта; текста чата в нём нет. */
     static final Logic.Journal journal = new Logic.Journal();
 
@@ -342,7 +344,7 @@ public final class ClawdService extends AccessibilityService
                 editNode = null;
                 stopNode = null;
             }
-            hide("Claude не на экране");
+            hide("Claude не на экране" + (blocker != null ? ", сверху " + blocker : ""));
             setContentEvents(false);
             return;
         }
@@ -417,6 +419,7 @@ public final class ClawdService extends AccessibilityService
         AccessibilityNodeInfo result = null;
         boolean decided = false;
         boolean focused = false;
+        blocker = null;
         Rect r = new Rect();
         for (AccessibilityWindowInfo w : windows) {
             if (decided && sb == null) break;
@@ -441,11 +444,15 @@ public final class ClawdService extends AccessibilityService
                     if (w.isFocused()) focused = true;
                 } else if (result != null || coversScreen(r)) {
                     decided = true;
+                    if (result == null) blocker = "прил " + pkg;
                 }
             } else if (type == AccessibilityWindowInfo.TYPE_SYSTEM && w.isFocused() && coversScreen(r)) {
                 CharSequence title = w.getTitle();
                 boolean screenshot = title != null && title.toString().toLowerCase().contains("screenshot");
-                if (!screenshot) decided = true; // раскрытая шторка
+                if (!screenshot) {
+                    decided = true; // раскрытая шторка
+                    if (result == null) blocker = "сист " + title;
+                }
             }
         }
         if (sb != null) {
@@ -559,7 +566,10 @@ public final class ClawdService extends AccessibilityService
                 break;
             }
         }
-        StringBuilder tail = now - lastReportAt >= REPORT_MS ? new StringBuilder() : null;
+        // окно на анимации входа/выхода уменьшено и сдвинуто — такой снимок в отчёт не берём
+        nodes.get(0).getBoundsInScreen(r);
+        boolean settled = r.left == 0 && r.top == 0;
+        StringBuilder tail = settled && now - lastReportAt >= REPORT_MS ? new StringBuilder() : null;
         if (stopNode == null) stopNode = busyInFeed(nodes, top, tail);
 
         if (tail != null) {
