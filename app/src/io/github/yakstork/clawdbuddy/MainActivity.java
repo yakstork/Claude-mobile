@@ -286,12 +286,14 @@ public final class MainActivity extends Activity {
             @Override public void onClick(View v) {
                 String r = ClawdService.lastReport;
                 String w = ClawdService.lastWindows;
-                if (r == null && w.isEmpty()) {
+                String j = ClawdService.journal.dump();
+                if (r == null && w.isEmpty() && j.isEmpty()) {
                     toast("Сначала открой чат в Claude");
                     return;
                 }
-                r = (r != null ? r : "Clawd ни разу не находил поле ввода\n" + ClawdService.status + "\n")
-                        + "окна (сверху вниз, на момент последней проверки):\n" + w;
+                r = (r != null ? r : "Clawd ни разу не находил поле ввода\n")
+                        + "окна (сверху вниз, на момент последней проверки):\n" + w
+                        + "сейчас: " + ClawdService.status + "\nжурнал:\n" + j;
                 ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
                 cm.setPrimaryClip(ClipData.newPlainText("Clawd", r));
                 toast("Скопировано — пришли, если что-то работает не так");
