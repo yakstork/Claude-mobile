@@ -116,6 +116,8 @@ public final class ClawdService extends AccessibilityService
     private AccessibilityNodeInfo stopNode;
 
     private ValueAnimator mover;
+    /** Куда едет mover — чтобы не перезапускать его на каждой проверке к той же цели. */
+    private int moverToX, moverToY;
     private boolean dragging;
 
     // ---- жизненный цикл ----
@@ -373,7 +375,11 @@ public final class ClawdService extends AccessibilityService
         boolean stable = Math.abs(box.left - lastBox.left) <= tol && Math.abs(box.top - lastBox.top) <= tol
                 && Math.abs(box.right - lastBox.right) <= tol;
         lastBox.set(box);
-        if (!stable) lastActivity = now;
+        if (!stable) {
+            lastActivity = now;
+            // рамку мерили на ходу (анимация окна, перестройка поля) — перемерить, когда встанет
+            contentDirty = true;
+        }
         unstable = stable ? 0 : unstable + 1;
         if (!shown) {
             // не ждём бесконечно, если что-то рядом всё время шевелится
@@ -688,13 +694,18 @@ public final class ClawdService extends AccessibilityService
         final int fromX = lp.x, fromY = lp.y;
         final int toX = targetX(), toY = targetY();
         if (Math.abs(fromX - toX) <= 1 && Math.abs(fromY - toY) <= 1) return;
+        if (animate && mover != null && mover.isRunning() && toX == moverToX && toY == moverToY) return;
         if (mover != null) mover.cancel();
         if (!animate) {
             moveTo(toX, toY);
             return;
         }
+        moverToX = toX;
+        moverToY = toY;
+        int far = Math.abs(toY - fromY);
         mover = ValueAnimator.ofFloat(0f, 1f);
-        mover.setDuration(Math.abs(toY - fromY) > clawd.heightPx() * 2 ? 110 : 70);
+        // к другому полю (другая вкладка) — плавнее, за клавиатурой — быстро
+        mover.setDuration(far > clawd.heightPx() * 6 ? 240 : far > clawd.heightPx() * 2 ? 110 : 70);
         mover.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
             @Override public void onAnimationUpdate(ValueAnimator a) {
                 if (!shown) return;
