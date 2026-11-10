@@ -541,4 +541,38 @@ final class WebFrames {
     static final String[][] TYPING = {TYPE1, TYPE2, TYPE3, TYPE2, TYPE1, TYPE2, TYPE3, TYPE1, TYPE2, TYPE3, TYPE2, TYPE2};
     /** Закрывает ноутбук, убирает и поворачивается обратно. */
     static final String[][] OUTRO = {CLOSE, CLOSE, PACK, STOW, BACK1, BACK1, BACK2, BACK2};
+
+    /**
+     * Где в кадре голова: {верхняя строка, левая колонка, правая колонка}. Это первая сверху строка,
+     * где тело идёт одним сплошным куском не уже 14 пикселей: поднятые руки (два куска) и рука с
+     * ноутбуком (узкий кусок) так не выглядят.
+     */
+    static int[] head(String[] f) {
+        for (int y = 0; y < f.length; y++) {
+            String row = f[y];
+            int l = -1, r = -1;
+            boolean solid = true;
+            for (int x = 0; x < row.length(); x++) {
+                char ch = row.charAt(x);
+                if (ch != 'O' && ch != 'D' && ch != 'E') continue;
+                if (l < 0) l = x;
+                else if (x != r + 1) solid = false;
+                r = x;
+            }
+            if (l >= 0 && solid && r - l + 1 >= 14) return new int[] {y, l, r};
+        }
+        return null;
+    }
+
+    /** Шаги: STAND, у пар ног 1+3 и 2+4 по очереди нет нижней строки. */
+    static final String[][] WALK = {shortLegs(0), shortLegs(1)};
+
+    private static String[] shortLegs(int parity) {
+        String[] f = STAND.clone();
+        char[] row = f[H - 1].toCharArray();
+        int[] legs = {14, 18, 24, 28};
+        for (int i = parity; i < legs.length; i += 2) row[legs[i]] = row[legs[i] + 1] = '.';
+        f[H - 1] = new String(row);
+        return f;
+    }
 }

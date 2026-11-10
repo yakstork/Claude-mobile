@@ -28,6 +28,33 @@ final class Logic {
                 || (desc != null && QUEUE.matcher(desc).find());
     }
 
+    /** Текст — кнопка «Стоп» (клик по ней = пользователь остановил ответ). */
+    static boolean isStop(CharSequence s) {
+        return s != null && STOP.matcher(s).matches();
+    }
+
+    /** Плашка в ленте после остановки: «Ответ Claude был прерван.» / «…response was interrupted». */
+    private static final Pattern INTERRUPTED = Pattern.compile("(?iu)(ответ claude был прерван|response was interrupted)");
+
+    static boolean isInterrupted(CharSequence s) {
+        return s != null && INTERRUPTED.matcher(s).find();
+    }
+
+    /** «Стоп» нажат не раньше чем 3 с назад (stopPressedAt == 0 — не нажимали). */
+    static boolean stoppedByUser(long now, long stopPressedAt) {
+        return stopPressedAt > 0 && now - stopPressedAt <= 3000;
+    }
+
+    /** Пора спать: ничего не происходило ≥ 2 мин, он не занят (отвечает Claude, тащат, падает). */
+    static boolean shouldSleep(long now, long lastActivity, boolean busy) {
+        return !busy && now - lastActivity >= 120000;
+    }
+
+    /** Ответов за сегодня после ещё одного: день (yyyymmdd) сменился — счёт заново с 1. */
+    static int countToday(int storedDay, int today, int storedCount) {
+        return storedDay == today ? storedCount + 1 : 1;
+    }
+
     /**
      * Рамка композера {лево, верх, право, низ}: поле ввода плюс его предки (от ближнего к
      * дальнему, null — конец), пока они похожи на рамку — не во весь экран по ширине, не выше 45%

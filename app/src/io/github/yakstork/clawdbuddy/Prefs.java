@@ -16,6 +16,16 @@ final class Prefs {
     static final String CELEBRATE = "celebrate";
     static final String HAPTICS = "haptics";
     static final String STYLE = "style";
+    static final String SLEEP = "sleep";
+    static final String WALK = "walk";
+    static final String STOP_REACT = "stop_react";
+    static final String WATCH_TYPING = "watch_typing";
+    static final String TOSS = "toss";
+    static final String HAT = "hat";
+    static final String COUNT = "count";
+    static final String COUNT_DAY = "count_day";
+    static final String COUNT_TODAY = "count_today";
+    static final String COUNT_TOTAL = "count_total";
 
     /** Ширина Clawd в dp для размеров S / M / L (на claude.ai он примерно как S). */
     static final int[] SIZES_DP = {34, 42, 54};
@@ -45,6 +55,30 @@ final class Prefs {
     static boolean typing(SharedPreferences p) { return p.getBoolean(TYPING, true); }
     static boolean celebrate(SharedPreferences p) { return p.getBoolean(CELEBRATE, true); }
     static boolean haptics(SharedPreferences p) { return p.getBoolean(HAPTICS, true); }
+    static boolean sleep(SharedPreferences p) { return p.getBoolean(SLEEP, true); }
+    static boolean walk(SharedPreferences p) { return p.getBoolean(WALK, true); }
+    static boolean stopReact(SharedPreferences p) { return p.getBoolean(STOP_REACT, true); }
+    static boolean watchTyping(SharedPreferences p) { return p.getBoolean(WATCH_TYPING, true); }
+    static boolean toss(SharedPreferences p) { return p.getBoolean(TOSS, true); }
+    static boolean count(SharedPreferences p) { return p.getBoolean(COUNT, true); }
+    static int countDay(SharedPreferences p) { return p.getInt(COUNT_DAY, 0); }
+    static int countToday(SharedPreferences p) { return p.getInt(COUNT_TODAY, 0); }
+    static int countTotal(SharedPreferences p) { return p.getInt(COUNT_TOTAL, 0); }
+
+    /** Сегодняшняя дата как yyyymmdd по местному времени. */
+    static int today() {
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        return c.get(java.util.Calendar.YEAR) * 10000 + (c.get(java.util.Calendar.MONTH) + 1) * 100
+                + c.get(java.util.Calendar.DAY_OF_MONTH);
+    }
+
+    static ClawdView.Hat hat(SharedPreferences p) {
+        try {
+            return ClawdView.Hat.valueOf(p.getString(HAT, "none").toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            return ClawdView.Hat.NONE;
+        }
+    }
 
     static ClawdView.Style style(SharedPreferences p) {
         try {

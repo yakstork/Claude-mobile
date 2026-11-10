@@ -16,15 +16,17 @@ import java.util.Random;
  *  - SQUARE — квадратный из версии 0.2;
  *  - CLASSIC — вытянутый из версии 0.1.
  * Клетка — целое число пикселей, края чёткие. Пока он стоит, кадры не перерисовываются: моргание
- * и взгляд — редкие отложенные задачи; во время анимаций — 12 кадров в секунду, как на сайте.
+ * и взгляд — редкие отложенные задачи; во время анимаций — 12 кадров в секунду, как на сайте
+ * (во сне — два в секунду).
  *
  * Прыжки ({@link Jump}) — из отрезков «присел» и «в воздухе». В воздухе руки вверх, перед толчком
  * и при приземлении — присед. Вокруг рисунка запас (сверху и по бокам) под прыжки и сальто: окно
  * картинки касаний не ловит, так что запас ничему не мешает.
  */
 final class ClawdView extends View {
-    enum Mood { IDLE, TYPING, OUTRO, HAPPY, DANCE }
+    enum Mood { IDLE, TYPING, OUTRO, HAPPY, DANCE, SLEEP, SHAKE }
     enum Style { WEB, SQUARE, CLASSIC }
+    enum Hat { NONE, CAP, HEADPHONES, SANTA }
 
     /** Виды прыжков. Высота и сдвиг — в пикселях стиля claude.ai (в остальных стилях вдвое меньше клеток). */
     enum Jump {
@@ -33,7 +35,11 @@ final class ClawdView extends View {
         DOUBLE(squat(80), air(300, 4), squat(70), air(320, 5), squat(100)),
         SIDE(squat(80), side(330, 4, 0, 6), squat(70), side(330, 4, 6, 0), squat(90)),
         FLIP(squat(130), flip(620, 10), squat(130)),
-        SPIN(squat(90), spin(520, 7), squat(100));
+        SPIN(squat(90), spin(520, 7), squat(100)),
+        // служебные — в случайный прыжок по тапу не попадают
+        LEAP(squat(40), air(200, 8)),
+        STARTLE(air(160, 3), squat(90)),
+        LAND(squat(140));
 
         final Seg[] segs;
         final int ms;
@@ -74,11 +80,20 @@ final class ClawdView extends View {
     private static final int HAPPY_TICKS = 17;
     private static final int DANCE_TICKS = 20;
     private static final int WEB_HEAD = 3;
+    private static final long SLEEP_TICK_MS = 500;
+    private static final int SHAKE_TICKS = 8;
 
     private static final int LAPTOP = 0xFFC5C9CF;
     private static final int LAPTOP_LOGO = 0xFFE9EBEE;
     private static final int LAPTOP_BASE = 0xFF8A8F96;
     private static final int WEB_LAPTOP = 0xFF8C8C8C;
+    private static final int HAT_BLUE = 0xFF1F3A7A;
+    private static final int HAT_BRIM = 0xFF142A5C;
+    private static final int HAT_DARK = 0xFF33363B;
+    private static final int HAT_CUP = 0xFF4A4E55;
+    private static final int SANTA_RED = 0xFFD0312D;
+    private static final int WHITE = 0xFFF4F4F4;
+    private static final int SLEEP_Z = 0xFFB8C4D8;
 
     private final Paint paint = new Paint();
     private final Random random = new Random();
@@ -92,6 +107,9 @@ final class ClawdView extends View {
     private int tick;
     private int look; // -1 влево, 0 прямо, 1 вправо
     private boolean blinking;
+    private boolean eyesDown;
+    private boolean walking;
+    private Hat hat = Hat.NONE;
 
     private Jump jump;
     private Jump lastJump;
@@ -111,7 +129,7 @@ final class ClawdView extends View {
     private int nativeRows() { return style == Style.WEB ? WebFrames.H + WEB_HEAD : 14; }
     private int padLeft() { return style == Style.WEB ? 0 : 3; }  // в WEB слева и так место под ноутбук
     private int padRight() { return style == Style.WEB ? 7 : 3; }
-    private int padTop() { return style == Style.WEB ? 8 : 3; }
+    private int padTop() { return style == Style.WEB ? 8 : style == Style.CLASSIC ? 4 : 3; } // в CLASSIC — под помпон в прыжке
     private int cols() { return padLeft() + nativeCols() + padRight(); }
     private int rows() { return padTop() + nativeRows(); }
     private int bodyCols() { return style == Style.WEB ? 24 : style == Style.SQUARE ? 12 : 16; }
@@ -163,6 +181,12 @@ final class ClawdView extends View {
         invalidate();
     }
 
+    void setHat(Hat h) {
+        if (hat == h) return;
+        hat = h;
+        invalidate();
+    }
+
     // ---- настроение ----
 
     Mood mood() { return mood == Mood.OUTRO && pending != null ? pending : mood; }
@@ -184,7 +208,9 @@ final class ClawdView extends View {
     void reset() {
         pending = null;
         jump = null;
+        eyesDown = false;
         removeCallbacks(frame);
+        removeCallbacks(unlookDown);
         start(Mood.IDLE);
     }
 
@@ -192,8 +218,31 @@ final class ClawdView extends View {
         mood = m;
         tick = 0;
         removeCallbacks(ticker);
-        if (m != Mood.IDLE) postDelayed(ticker, TICK_MS);
+        if (m != Mood.IDLE || walking) postDelayed(ticker, tickMs());
         invalidate();
+    }
+
+    private long tickMs() {
+        return mood == Mood.SLEEP ? SLEEP_TICK_MS : TICK_MS;
+    }
+
+    /** Идёт ножками (переезд, перетаскивание): в покое ноги попеременно короче на клетку. */
+    void setWalking(boolean w) {
+        if (walking == w) return;
+        walking = w;
+        if (mood == Mood.IDLE) {
+            removeCallbacks(ticker);
+            if (w) postDelayed(ticker, TICK_MS);
+            invalidate();
+        }
+    }
+
+    /** Глаза на клетку вниз, пока набирают текст; через ms после последнего вызова — обратно. */
+    void lookDown(long ms) {
+        eyesDown = true;
+        invalidate();
+        removeCallbacks(unlookDown);
+        postDelayed(unlookDown, ms);
     }
 
     void jump(Jump kind) {
@@ -210,7 +259,7 @@ final class ClawdView extends View {
         Jump[] all = Jump.values();
         Jump k;
         do {
-            k = all[random.nextInt(all.length)];
+            k = all[random.nextInt(Jump.SPIN.ordinal() + 1)];
         } while (k == lastJump);
         jump(k);
     }
@@ -219,6 +268,20 @@ final class ClawdView extends View {
     void celebrate() {
         setMood(random.nextInt(10) < 6 ? Mood.HAPPY : Mood.DANCE);
         if (mood == Mood.HAPPY) jump(random.nextBoolean() ? Jump.HOP : Jump.BIG);
+    }
+
+    /** Ответ остановлен кнопкой «Стоп»: ноутбук пропадает сразу, резкий подскок, без танца. */
+    void startle() {
+        pending = null;
+        start(Mood.IDLE);
+        jump(Jump.STARTLE);
+    }
+
+    /** Приземлился после броска: присед и отряхивание. */
+    void land() {
+        jump(Jump.LAND);
+        // за ноутбуком не отряхивается: иначе убрал бы его до конца ответа
+        if (mood() == Mood.IDLE) setMood(Mood.SHAKE);
     }
 
     private final Runnable ticker = new Runnable() {
@@ -231,12 +294,13 @@ final class ClawdView extends View {
                 if (next == Mood.HAPPY) jump(random.nextBoolean() ? Jump.HOP : Jump.BIG);
                 return;
             }
-            if ((mood == Mood.HAPPY && tick >= HAPPY_TICKS) || (mood == Mood.DANCE && tick >= DANCE_TICKS)) {
+            if ((mood == Mood.HAPPY && tick >= HAPPY_TICKS) || (mood == Mood.DANCE && tick >= DANCE_TICKS)
+                    || (mood == Mood.SHAKE && tick >= SHAKE_TICKS)) {
                 start(Mood.IDLE);
                 return;
             }
             invalidate();
-            postDelayed(this, TICK_MS);
+            postDelayed(this, tickMs());
         }
     };
 
@@ -265,6 +329,13 @@ final class ClawdView extends View {
             blinking = false;
             invalidate();
             scheduleBlink();
+        }
+    };
+
+    private final Runnable unlookDown = new Runnable() {
+        @Override public void run() {
+            eyesDown = false;
+            invalidate();
         }
     };
 
@@ -308,7 +379,7 @@ final class ClawdView extends View {
         super.onAttachedToWindow();
         scheduleBlink();
         scheduleGlance();
-        if (mood != Mood.IDLE) postDelayed(ticker, TICK_MS);
+        if (mood != Mood.IDLE || walking) postDelayed(ticker, tickMs());
     }
 
     @Override
@@ -317,6 +388,7 @@ final class ClawdView extends View {
         removeCallbacks(unblink);
         removeCallbacks(glance);
         removeCallbacks(unglance);
+        removeCallbacks(unlookDown);
         removeCallbacks(ticker);
         removeCallbacks(frame);
         super.onDetachedFromWindow();
@@ -368,6 +440,7 @@ final class ClawdView extends View {
         float k = jumpScale();
         int liftPx = Math.round(lift * k) * cell;
         int dxPx = Math.round(dx * k) * jumpDir * cell;
+        if (mood == Mood.SHAKE) dxPx += (tick % 2 == 0 ? -1 : 1) * cell; // отряхивается
         canvas.save();
         canvas.translate(padLeft() * cell + dxPx, padTop() * cell - liftPx);
         boolean turning = rot != 0 || scaleX != 1;
@@ -410,22 +483,30 @@ final class ClawdView extends View {
                     mirror = (tick / 2) % 2 == 1;
                     break;
                 default:
-                    f = WebFrames.STAND;
+                    f = walking && mood == Mood.IDLE ? WebFrames.WALK[tick % 2] : WebFrames.STAND;
             }
         }
+        // голова в каждом кадре на своём месте (за ноутбуком он в профиль и ниже)
+        int[] h = WebFrames.head(f);
+        int top = h != null ? h[0] : WebFrames.BODY_TOP;
+        // шапка — до тела: поднятые в прыжке руки остаются поверх неё; за ноутбуком он смотрит влево
+        if (h != null) drawHat(c, h[1], h[2], top, 2, mood == Mood.TYPING || mood == Mood.OUTRO);
         drawMap(c, f, mirror);
-        if (p == PHASE_NONE && mood == Mood.IDLE && (blinking || look != 0)) {
+        boolean sleep = mood == Mood.SLEEP;
+        if (p == PHASE_NONE && (mood == Mood.IDLE || sleep) && (blinking || sleep || look != 0 || eyesDown)) {
             int r = WebFrames.EYE_TOP;
             rect(c, WebFrames.EYE_L, r, WebFrames.EYE_L + 1, r + 1, body);
             rect(c, WebFrames.EYE_R, r, WebFrames.EYE_R + 1, r + 1, body);
-            if (blinking) {
+            if (blinking || sleep) {
                 rect(c, WebFrames.EYE_L, r + 1, WebFrames.EYE_L + 1, r + 1, eyes);
                 rect(c, WebFrames.EYE_R, r + 1, WebFrames.EYE_R + 1, r + 1, eyes);
             } else {
-                rect(c, WebFrames.EYE_L + look, r, WebFrames.EYE_L + 1 + look, r + 1, eyes);
-                rect(c, WebFrames.EYE_R + look, r, WebFrames.EYE_R + 1 + look, r + 1, eyes);
+                int d = eyesDown ? 1 : 0;
+                rect(c, WebFrames.EYE_L + look, r + d, WebFrames.EYE_L + 1 + look, r + 1 + d, eyes);
+                rect(c, WebFrames.EYE_R + look, r + d, WebFrames.EYE_R + 1 + look, r + 1 + d, eyes);
             }
         }
+        if (sleep) drawSleep(c, 29, top, 2);
     }
 
     /** Рисует кадр строками: подряд идущие одинаковые пиксели — одним прямоугольником. */
@@ -479,6 +560,7 @@ final class ClawdView extends View {
             rect(c, 3, 3, 8, 6, LAPTOP);
             rect(c, 5, 4, 6, 4, LAPTOP_LOGO);
             rect(c, 1, 7, 10, 7, LAPTOP_BASE);
+            drawHat(c, 2, 9, 0, 1, false);
             return;
         }
         boolean happy = mood == Mood.HAPPY;
@@ -494,17 +576,20 @@ final class ClawdView extends View {
         }
         int[] legs = {2, 4, 7, 9};
         for (int i = 0; i < legs.length; i++) {
-            boolean shortLeg = squat || (dance && (danceFrame % 2 == 0) == (i < 2));
+            boolean shortLeg = squat || (dance && (danceFrame % 2 == 0) == (i < 2)) || stepping(p, i);
             rect(c, legs[i], shortLeg ? 7 : 6, legs[i], 7, body);
         }
         if (happy && p == PHASE_NONE) {
             px(c, 2, 2 + s, eyes); px(c, 3, 1 + s, eyes); px(c, 4, 2 + s, eyes);
             px(c, 7, 2 + s, eyes); px(c, 8, 1 + s, eyes); px(c, 9, 2 + s, eyes);
-        } else if (!blinking) {
+        } else if (!blinking && mood != Mood.SLEEP) {
             int l = dance || p != PHASE_NONE ? 0 : look;
-            px(c, 3 + l, 1 + s, eyes);
-            px(c, 8 + l, 1 + s, eyes);
+            int d = down(p) ? 1 : 0;
+            px(c, 3 + l, 1 + s + d, eyes);
+            px(c, 8 + l, 1 + s + d, eyes);
         }
+        if (mood == Mood.SLEEP) drawSleep(c, 9, s, 1);
+        drawHat(c, 2, 9, s, 1, false);
     }
 
     // первый (0.1)
@@ -519,7 +604,7 @@ final class ClawdView extends View {
         boolean f = (tick / 2) % 2 == 0;
 
         int[] legs = typing ? new int[] {3, 12} : new int[] {3, 5, 10, 12};
-        for (int col : legs) rect(c, col, 8, col, squat ? 8 : 9, body);
+        for (int i = 0; i < legs.length; i++) rect(c, legs[i], 8, legs[i], squat || stepping(p, i) ? 8 : 9, body);
         rect(c, 2, 1, 13, 6, body);
         rect(c, 2, 7, 13, 7, shade);
 
@@ -540,19 +625,73 @@ final class ClawdView extends View {
         if (happyEyes) {
             px(c, 4, 4, eyes); px(c, 5, 3, eyes); px(c, 6, 4, eyes);
             px(c, 9, 4, eyes); px(c, 10, 3, eyes); px(c, 11, 4, eyes);
-        } else if (typing || blinking) {
+        } else if (typing || blinking || mood == Mood.SLEEP) {
             px(c, 5, 4, eyes);
             px(c, 10, 4, eyes);
         } else {
             int l = p == PHASE_NONE ? look : 0;
-            rect(c, 5 + l, 3, 5 + l, 4, eyes);
-            rect(c, 10 + l, 3, 10 + l, 4, eyes);
+            int d = down(p) ? 1 : 0;
+            rect(c, 5 + l, 3 + d, 5 + l, 4 + d, eyes);
+            rect(c, 10 + l, 3 + d, 10 + l, 4 + d, eyes);
         }
 
         if (typing) {
             rect(c, 4, 5, 11, 8, LAPTOP);
             rect(c, 7, 6, 8, 7, LAPTOP_LOGO);
             rect(c, 3, 9, 12, 9, LAPTOP_BASE);
+        }
+        if (mood == Mood.SLEEP) drawSleep(c, 13, 1, 1);
+        drawHat(c, 2, 13, 1, 1, false);
+    }
+
+    /** Шаг: ноги пары 1+3 и 2+4 по очереди короче на клетку. */
+    private boolean stepping(int p, int leg) {
+        return walking && mood == Mood.IDLE && p == PHASE_NONE && (tick % 2 == 0) == (leg % 2 == 0);
+    }
+
+    /** Глаза смотрят вниз (только в покое). */
+    private boolean down(int p) {
+        return eyesDown && mood == Mood.IDLE && p == PHASE_NONE;
+    }
+
+    /**
+     * Шапка поверх головы. hl..hr — колонки головы, top — её верхняя строка, u — клеток в
+     * «большой» клетке стиля (в WEB клетка вдвое мельче — всё вдвое крупнее). left — козырёк влево.
+     */
+    private void drawHat(Canvas c, int hl, int hr, int top, int u, boolean left) {
+        int mid = (hl + hr + 1) / 2;
+        switch (hat) {
+            case CAP:
+                rect(c, hl + u, top - 2 * u, hr - u, top - 1, HAT_BLUE);
+                if (left) rect(c, hl - u, top - u, hl + u - 1, top - 1, HAT_BRIM); // козырёк вбок
+                else rect(c, hr - u + 1, top - u, hr + u, top - 1, HAT_BRIM);
+                break;
+            case HEADPHONES:
+                rect(c, hl, top - u, hr, top - 1, HAT_DARK); // дуга
+                rect(c, hl, top, hl + u - 1, top + u - 1, HAT_DARK);
+                rect(c, hr - u + 1, top, hr, top + u - 1, HAT_DARK);
+                rect(c, hl - u, top, hl - 1, top + 2 * u - 1, HAT_CUP); // чашки по бокам
+                rect(c, hr + 1, top, hr + u, top + 2 * u - 1, HAT_CUP);
+                break;
+            case SANTA:
+                rect(c, hl, top - u, hr, top - 1, WHITE); // опушка
+                rect(c, mid - 3 * u, top - 2 * u, mid + 3 * u - 1, top - u - 1, SANTA_RED);
+                rect(c, mid - 2 * u, top - 3 * u, mid + 2 * u - 1, top - 2 * u - 1, SANTA_RED);
+                rect(c, mid - u, top - 4 * u, mid + u - 1, top - 3 * u - 1, WHITE); // помпон
+                break;
+            default:
+                break;
+        }
+    }
+
+    /** Две «z» над головой справа, всплывают по клетке за тик. */
+    private void drawSleep(Canvas c, int hr, int top, int u) {
+        for (int i = 0; i < 2; i++) {
+            int x = hr + 1 + u;
+            int y = top - 2 * u - (tick + 3 * i) % 6 * u;
+            rect(c, x, y, x + 3 * u - 1, y + u - 1, SLEEP_Z);
+            rect(c, x + u, y + u, x + 2 * u - 1, y + 2 * u - 1, SLEEP_Z);
+            rect(c, x, y + 2 * u, x + 3 * u - 1, y + 3 * u - 1, SLEEP_Z);
         }
     }
 

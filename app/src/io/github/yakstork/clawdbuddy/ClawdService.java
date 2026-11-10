@@ -2,6 +2,8 @@ package io.github.yakstork.clawdbuddy;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.animation.ValueAnimator;
 import android.content.SharedPreferences;
 import android.graphics.PixelFormat;
@@ -21,6 +23,7 @@ import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
+import android.view.animation.AccelerateInterpolator;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -123,6 +126,18 @@ public final class ClawdService extends AccessibilityService
     /** Куда едет mover — чтобы не перезапускать его на каждой проверке к той же цели. */
     private int moverToX, moverToY;
     private boolean dragging;
+    /** Падение после броска — place() в это время не вмешивается. */
+    private boolean falling;
+    private ValueAnimator faller;
+    /** Когда заснул — проснётся, как только lastActivity станет новее. */
+    private long sleptAt;
+    /** Когда последний раз нажали «Стоп» в Claude; 0 — не нажимали. */
+    private long stopPressedAt;
+    /** Сколько плашек «ответ прерван» было на экране, когда ответ начался. */
+    private int noticesAtStart;
+    /** Прошлое поле ввода и длина его текста — сам текст не хранится. */
+    private AccessibilityNodeInfo typedNode;
+    private int typedLen;
 
     // ---- жизненный цикл ----
 
@@ -206,8 +221,9 @@ public final class ClawdService extends AccessibilityService
 
     @Override
     public void onSharedPreferenceChanged(SharedPreferences p, String key) {
+        if (key != null && key.startsWith("count_")) return; // счётчик — не вид
         applyLook();
-        if (shown) place(false);
+        if (shown && !falling) place(false);
         schedule(0);
     }
 
@@ -215,6 +231,7 @@ public final class ClawdService extends AccessibilityService
         clawd.setStyle(Prefs.style(prefs));
         clawd.setSizeDp(Prefs.SIZES_DP[Math.max(0, Math.min(2, Prefs.size(prefs)))]);
         clawd.setColor(Prefs.color(prefs));
+        clawd.setHat(Prefs.hat(prefs));
         bodyRect = clawd.bodyRect();
         tlp.width = bodyRect.width();
         tlp.height = bodyRect.height();
@@ -222,6 +239,8 @@ public final class ClawdService extends AccessibilityService
         if (!Prefs.typing(prefs) && clawd.mood() == ClawdView.Mood.TYPING) {
             clawd.setMood(ClawdView.Mood.IDLE);
         }
+        if (!Prefs.sleep(prefs) && clawd.mood() == ClawdView.Mood.SLEEP) clawd.setMood(ClawdView.Mood.IDLE);
+        if (!Prefs.walk(prefs)) clawd.setWalking(false);
     }
 
     // ---- события ----
@@ -246,7 +265,24 @@ public final class ClawdService extends AccessibilityService
                 contentDirty = true;
                 schedule(CONTENT_THROTTLE_MS);
             }
+        } else if (type == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+            // нужно и счётчику: остановленные ответы он не считает
+            if (pkg != null && CLAUDE.contentEquals(pkg) && (Prefs.stopReact(prefs) || Prefs.count(prefs))
+                    && isStopClick(e)) {
+                stopPressedAt = SystemClock.uptimeMillis();
+                journal.add(stopPressedAt, "нажат Стоп");
+            }
         }
+    }
+
+    /** Клик по кнопке «Стоп»: текст события, описание или текст/описание самого узла. */
+    private static boolean isStopClick(AccessibilityEvent e) {
+        for (CharSequence t : e.getText()) {
+            if (Logic.isStop(t)) return true;
+        }
+        if (Logic.isStop(e.getContentDescription())) return true;
+        AccessibilityNodeInfo s = e.getSource();
+        return s != null && (Logic.isStop(s.getContentDescription()) || Logic.isStop(s.getText()));
     }
 
     /**
@@ -290,7 +326,8 @@ public final class ClawdService extends AccessibilityService
         AccessibilityServiceInfo info = getServiceInfo();
         if (info == null) return;
         int base = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED | AccessibilityEvent.TYPE_WINDOWS_CHANGED;
-        info.eventTypes = on ? base | AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED : base;
+        info.eventTypes = on ? base | AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+                | AccessibilityEvent.TYPE_VIEW_CLICKED : base;
         setServiceInfo(info);
         contentEvents = on;
     }
@@ -370,6 +407,8 @@ public final class ClawdService extends AccessibilityService
             return;
         }
 
+        if (Prefs.watchTyping(prefs)) watchTyping();
+
         if (now - lastStopCheck >= STOP_CHECK_MS) {
             lastStopCheck = now;
             updateGenerating();
@@ -388,12 +427,34 @@ public final class ClawdService extends AccessibilityService
         if (!shown) {
             // не ждём бесконечно, если что-то рядом всё время шевелится
             if (now - claudeOnTopSince >= OPEN_SETTLE_MS && (stable || unstable > 6)) show(now);
-        } else if (!dragging) {
+        } else if (!dragging && !falling) {
             place(true);
         }
+        if (shown && Prefs.sleep(prefs)) updateSleep(now);
         status = "Claude открыт · рамка " + box.toShortString() + (aboveEdit > 0 ? " (+" + aboveEdit + " над текстом)" : "")
                 + (generating ? " · отвечает" : "") + (shown ? " · Clawd виден" : " · жду, пока всё встанет");
         next(now, !shown);
+    }
+
+    /** Длина текста в поле ввода поменялась (и Claude не отвечает) — он смотрит вниз, на набор. */
+    private void watchTyping() {
+        int len = 0;
+        CharSequence t = editNode.getText();
+        if (t != null && !(Build.VERSION.SDK_INT >= 26 && editNode.isShowingHintText())) len = t.length();
+        if (shown && !generating && editNode.equals(typedNode) && len != typedLen) clawd.lookDown(1200);
+        typedNode = editNode;
+        typedLen = len;
+    }
+
+    /** Засыпает после двух минут тишины, просыпается от новой активности. */
+    private void updateSleep(long now) {
+        ClawdView.Mood m = clawd.mood();
+        if (m == ClawdView.Mood.SLEEP) {
+            if (lastActivity > sleptAt) clawd.setMood(ClawdView.Mood.IDLE);
+        } else if (m == ClawdView.Mood.IDLE && Logic.shouldSleep(now, lastActivity, generating || dragging || falling)) {
+            clawd.setMood(ClawdView.Mood.SLEEP);
+            sleptAt = now;
+        }
     }
 
     private void next(long now, boolean waitingToShow) {
@@ -602,13 +663,48 @@ public final class ClawdService extends AccessibilityService
             notGenerating = 0;
             if (!generating) {
                 generating = true;
+                noticesAtStart = interruptedNotices();
                 if (Prefs.typing(prefs) && shown) clawd.setMood(ClawdView.Mood.TYPING);
             }
         } else if (generating && ++notGenerating >= 2) {
             generating = false;
-            if (Prefs.celebrate(prefs) && shown) clawd.celebrate();
+            long now = SystemClock.uptimeMillis();
+            // событие нажатия Claude присылает не всегда — второй признак: в ленте появилась плашка
+            boolean stopped = Logic.stoppedByUser(now, stopPressedAt) || interruptedNotices() > noticesAtStart;
+            stopPressedAt = 0;
+            journal.add(now, stopped ? "ответ остановлен" : "ответ готов");
+            if (Prefs.count(prefs) && !stopped) countAnswer();
+            if (stopped && shown && Prefs.stopReact(prefs)) clawd.startle();
+            else if (Prefs.celebrate(prefs) && shown) clawd.celebrate();
             else clawd.setMood(ClawdView.Mood.IDLE);
         }
+    }
+
+    /**
+     * Сколько на экране плашек «Ответ Claude был прерван». Обходит и ленту сообщений, поэтому
+     * зовётся только дважды за ответ — в начале и в конце; текст сообщений никуда не сохраняется.
+     */
+    private int interruptedNotices() {
+        if (!Prefs.stopReact(prefs) && !Prefs.count(prefs)) return 0;
+        ArrayList<AccessibilityNodeInfo> nodes = new ArrayList<AccessibilityNodeInfo>(claudeRoots);
+        int count = 0;
+        for (int i = 0; i < nodes.size() && i < 600; i++) {
+            AccessibilityNodeInfo n = nodes.get(i);
+            if (n == null || !n.isVisibleToUser()) continue;
+            if (Logic.isInterrupted(n.getText())) count++;
+            for (int c = 0; c < n.getChildCount(); c++) nodes.add(n.getChild(c));
+        }
+        return count;
+    }
+
+    /** +1 к счётчикам ответов: за сегодня (счёт заново при смене дня) и за всё время. */
+    private void countAnswer() {
+        int today = Prefs.today();
+        prefs.edit()
+                .putInt(Prefs.COUNT_TODAY, Logic.countToday(Prefs.countDay(prefs), today, Prefs.countToday(prefs)))
+                .putInt(Prefs.COUNT_DAY, today)
+                .putInt(Prefs.COUNT_TOTAL, Prefs.countTotal(prefs) + 1)
+                .apply();
     }
 
     /** Кнопка «Стоп», подсказка «…в очередь» (текст, подсказка или описание поля) или строка состояния с таймером. */
@@ -706,6 +802,10 @@ public final class ClawdService extends AccessibilityService
         hiddenAt = SystemClock.uptimeMillis();
         journal.add(hiddenAt, "спрятал: " + (why != null ? why : "ошибка"));
         if (mover != null) mover.cancel();
+        if (faller != null) faller.cancel();
+        falling = false;
+        dragging = false;
+        clawd.setWalking(false);
         clawd.animate().cancel();
         clawd.setVisibility(View.GONE);
         touch.setVisibility(View.GONE);
@@ -731,6 +831,21 @@ public final class ClawdService extends AccessibilityService
         mover = ValueAnimator.ofFloat(0f, 1f);
         // к другому полю (другая вкладка) — плавнее, за клавиатурой — быстро
         mover.setDuration(far > clawd.heightPx() * 6 ? 240 : far > clawd.heightPx() * 2 ? 110 : 70);
+        if (Prefs.walk(prefs)) {
+            // далеко (другая вкладка) — вместо шагов прыжок; иначе шагает, пока едет
+            if (far > clawd.heightPx() * 6) {
+                clawd.jump(ClawdView.Jump.LEAP);
+            } else {
+                clawd.setWalking(true);
+                mover.addListener(new AnimatorListenerAdapter() {
+                    @Override public void onAnimationEnd(Animator a) {
+                        // отложенно: при перенацеливании (клавиатура едет) следующий mover уже
+                        // запущен — шаг не сбиваем, иначе ноги застывают
+                        handler.post(stopWalking);
+                    }
+                });
+            }
+        }
         mover.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
             @Override public void onAnimationUpdate(ValueAnimator a) {
                 if (!shown) return;
@@ -741,36 +856,83 @@ public final class ClawdService extends AccessibilityService
         mover.start();
     }
 
-    /** Тап — прыжок; перетаскивание — сдвиг вдоль поля ввода (позиция запоминается). */
+    private final Runnable stopWalking = new Runnable() {
+        @Override public void run() {
+            if (!dragging && (mover == null || !mover.isRunning())) clawd.setWalking(false);
+        }
+    };
+
+    /** Падает к полю ввода с ускорением (после броска) и приземляется. */
+    private void fall(int drop) {
+        final int fromY = lp.y;
+        float density = getResources().getDisplayMetrics().density;
+        falling = true;
+        faller = ValueAnimator.ofFloat(0f, 1f);
+        faller.setInterpolator(new AccelerateInterpolator());
+        faller.setDuration(Math.min(450, 150 + Math.round(drop / density * 0.7f)));
+        faller.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+            @Override public void onAnimationUpdate(ValueAnimator a) {
+                if (!shown) return;
+                float t = (Float) a.getAnimatedValue();
+                moveTo(lp.x, Math.round(fromY + (targetY() - fromY) * t));
+            }
+        });
+        faller.addListener(new AnimatorListenerAdapter() {
+            private boolean cancelled;
+            @Override public void onAnimationCancel(Animator a) { cancelled = true; }
+            @Override public void onAnimationEnd(Animator a) {
+                falling = false;
+                if (!cancelled && shown) clawd.land();
+            }
+        });
+        faller.start();
+    }
+
+    /** Тап — прыжок; перетаскивание — сдвиг вдоль поля ввода (позиция запоминается), с броском — и вверх. */
     private final class DragOrTap implements View.OnTouchListener {
-        private float downX;
-        private int startX;
+        private float downX, downY;
+        private int startX, startY;
         private final int slop = ViewConfiguration.get(ClawdService.this).getScaledTouchSlop();
 
         @Override
         public boolean onTouch(View v, MotionEvent e) {
+            boolean toss = Prefs.toss(prefs);
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                     downX = e.getRawX();
+                    downY = e.getRawY();
                     startX = lp.x;
+                    startY = lp.y;
                     dragging = false;
+                    lastActivity = SystemClock.uptimeMillis();
+                    if (clawd.mood() == ClawdView.Mood.SLEEP) clawd.setMood(ClawdView.Mood.IDLE);
                     if (mover != null) mover.cancel();
+                    if (faller != null) faller.cancel();
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     float dx = e.getRawX() - downX;
-                    if (!dragging && Math.abs(dx) > slop) dragging = true;
+                    float dy = e.getRawY() - downY;
+                    if (!dragging && (Math.abs(dx) > slop || (toss && Math.abs(dy) > slop))) {
+                        dragging = true;
+                        if (Prefs.walk(prefs)) clawd.setWalking(true);
+                    }
                     if (dragging) {
                         int minX = box.left - bodyRect.left;
                         int maxX = box.right - bodyRect.right;
-                        moveTo(Math.max(minX, Math.min(maxX, Math.round(startX + dx))), lp.y);
+                        int y = toss ? Math.max(0, Math.min(targetY(), Math.round(startY + dy))) : lp.y;
+                        moveTo(Math.max(minX, Math.min(maxX, Math.round(startX + dx))), y);
                     }
                     return true;
                 case MotionEvent.ACTION_UP:
                     if (dragging) {
+                        int drop = targetY() - lp.y;
+                        if (toss && drop > clawd.heightPx() / 2) fall(drop); // до записи X: place() в это время не вмешивается
                         int span = Math.max(1, box.width() - bodyRect.width());
                         float f = (lp.x + bodyRect.left - box.left) / (float) span;
                         prefs.edit().putFloat(Prefs.X_FRACTION, Math.max(0f, Math.min(1f, f))).apply();
                         dragging = false;
+                        clawd.setWalking(false);
+                        if (!falling) place(true); // приподняли чуть-чуть — вернуть на рамку сразу
                     } else {
                         clawd.tapJump();
                         if (Prefs.haptics(prefs) && vibrator != null && vibrator.hasVibrator()) {
@@ -782,6 +944,8 @@ public final class ClawdService extends AccessibilityService
                     return true;
                 case MotionEvent.ACTION_CANCEL:
                     dragging = false;
+                    clawd.setWalking(false);
+                    if (shown) place(true);
                     return true;
                 default:
                     return false;
