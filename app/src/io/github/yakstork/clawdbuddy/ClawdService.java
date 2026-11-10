@@ -550,12 +550,12 @@ public final class ClawdService extends AccessibilityService
                 dm.widthPixels, dm.heightPixels, dm.density);
         int left = f[0], top = f[1], right = f[2], bottom = f[3];
 
-        // кнопки композера, выступающие за узел рамки вниз, выдают её скрытый отступ
+        // кнопки композера, доходящие до низа узла рамки или выступающие за него, выдают её скрытый отступ
         int buttonBottom = -1;
         for (AccessibilityNodeInfo n : nodes) {
-            if (n == null || !n.isClickable() || !n.isVisibleToUser()) continue;
+            if (n == null || n == e || !n.isClickable() || !n.isVisibleToUser()) continue;
             n.getBoundsInScreen(r);
-            if (r.left >= left && r.right <= right && r.top < bottom && r.bottom > bottom) {
+            if (r.left >= left && r.right <= right && r.top < bottom && r.bottom >= bottom) {
                 buttonBottom = Math.max(buttonBottom, r.bottom);
             }
         }

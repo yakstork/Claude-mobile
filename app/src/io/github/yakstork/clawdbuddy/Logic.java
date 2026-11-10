@@ -54,8 +54,8 @@ final class Logic {
      * рамка охватывает кнопки с запасом 2dp, отступ сверху такой же, как снизу. Если узел и так
      * охватывает кнопки (главная, одна строка) — отступа нет.
      *
-     * frameBottom — низ узла рамки, buttonBottom — низ самой нижней кнопки, которая в него
-     * упирается (-1, если таких нет).
+     * frameBottom — низ узла рамки, buttonBottom — низ самой нижней кнопки, которая доходит до
+     * него или выступает (-1, если таких нет).
      */
     static int framePad(int frameBottom, int buttonBottom, float density) {
         int pad = buttonBottom + Math.round(2 * density) - frameBottom;
