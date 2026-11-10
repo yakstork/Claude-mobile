@@ -22,6 +22,7 @@ public final class LogicTest {
 
     public static void main(String[] args) {
         busy();
+        frame();
         framePad();
         front();
         journal();
@@ -30,6 +31,36 @@ public final class LogicTest {
             System.exit(1);
         }
         System.out.println("LogicTest: всё зелёное");
+    }
+
+    private static void checkFrame(String name, int[] want, int[] edit, int[]... ancestors) {
+        int[] got = Logic.frame(edit, ancestors, 1272, 2603, 3.5f);
+        check(java.util.Arrays.equals(got, want), "frame: " + name + " — " + java.util.Arrays.toString(got));
+    }
+
+    /** Раскладки из отчётов с OnePlus CPH2771 (1272×2603, плотность 3.5). */
+    private static void frame() {
+        checkFrame("чат Code, две строки", new int[] {56, 1711, 1216, 2425},
+                new int[] {102, 1739, 1170, 2243},
+                new int[] {56, 1711, 1216, 2271}, new int[] {56, 1711, 1216, 2425},
+                new int[] {0, 0, 1272, 2509}, new int[] {0, 0, 1272, 2509});
+        checkFrame("главная, одна строка", new int[] {56, 2271, 1216, 2453},
+                new int[] {256, 2278, 848, 2446},
+                new int[] {256, 2278, 873, 2446}, new int[] {256, 2278, 873, 2446},
+                new int[] {231, 2278, 873, 2446}, new int[] {56, 2278, 1216, 2446},
+                new int[] {56, 2271, 1216, 2453}, new int[] {0, 2215, 1272, 2509});
+        // поле (область нажатия 48dp) выступает вверх за контейнер [56,1274] — рамка дальше
+        checkFrame("главная с клавиатурой, две строки", new int[] {56, 1246, 1216, 1596},
+                new int[] {102, 1260, 1170, 1428},
+                new int[] {102, 1260, 1195, 1428}, new int[] {102, 1260, 1195, 1428},
+                new int[] {56, 1260, 1216, 1428}, new int[] {56, 1274, 1216, 1568},
+                new int[] {56, 1246, 1216, 1596}, new int[] {0, 1190, 1272, 1652});
+        checkFrame("поиск проектов, рамки нет", new int[] {42, 393, 1230, 561},
+                new int[] {42, 393, 1230, 561},
+                new int[] {0, 0, 1272, 2800}, new int[] {0, 0, 1272, 2800});
+        checkFrame("предков меньше шести", new int[] {56, 1711, 1216, 2271},
+                new int[] {102, 1739, 1170, 2243},
+                new int[] {56, 1711, 1216, 2271}, null, null);
     }
 
     /** Числа — из отчётов с OnePlus CPH2771 (плотность 3.5), сверены со скриншотами. */

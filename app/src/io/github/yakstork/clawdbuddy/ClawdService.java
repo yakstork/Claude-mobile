@@ -537,20 +537,18 @@ public final class ClawdService extends AccessibilityService
         Rect er = new Rect();
         Rect r = new Rect();
         e.getBoundsInScreen(er);
-        int top = er.top, left = er.left, right = er.right, bottom = er.bottom;
         int gap = Math.round(16 * dm.density);
 
+        int[][] ancestors = new int[6][];
         AccessibilityNodeInfo p = e.getParent();
         for (int i = 0; i < 6 && p != null; i++) {
             p.getBoundsInScreen(r);
-            if (r.height() > dm.heightPixels * 0.45f || r.width() >= dm.widthPixels * 0.98f
-                    || r.top > er.top || r.bottom < er.bottom - 2) break;
-            top = Math.min(top, r.top);
-            left = Math.min(left, r.left);
-            right = Math.max(right, r.right);
-            bottom = Math.max(bottom, r.bottom);
+            ancestors[i] = new int[] {r.left, r.top, r.right, r.bottom};
             p = p.getParent();
         }
+        int[] f = Logic.frame(new int[] {er.left, er.top, er.right, er.bottom}, ancestors,
+                dm.widthPixels, dm.heightPixels, dm.density);
+        int left = f[0], top = f[1], right = f[2], bottom = f[3];
 
         // кнопки композера, выступающие за узел рамки вниз, выдают её скрытый отступ
         int buttonBottom = -1;
