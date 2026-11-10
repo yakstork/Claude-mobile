@@ -264,7 +264,9 @@ public final class ClawdService extends AccessibilityService
                 schedule(CONTENT_THROTTLE_MS);
             }
         } else if (type == AccessibilityEvent.TYPE_VIEW_CLICKED) {
-            if (pkg != null && CLAUDE.contentEquals(pkg) && Prefs.stopReact(prefs) && isStopClick(e)) {
+            // нужно и счётчику: остановленные ответы он не считает
+            if (pkg != null && CLAUDE.contentEquals(pkg) && (Prefs.stopReact(prefs) || Prefs.count(prefs))
+                    && isStopClick(e)) {
                 stopPressedAt = SystemClock.uptimeMillis();
                 journal.add(stopPressedAt, "нажат Стоп");
             }
@@ -667,7 +669,7 @@ public final class ClawdService extends AccessibilityService
             boolean stopped = Logic.stoppedByUser(now, stopPressedAt);
             stopPressedAt = 0;
             if (Prefs.count(prefs) && !stopped) countAnswer();
-            if (stopped && shown) clawd.startle();
+            if (stopped && shown && Prefs.stopReact(prefs)) clawd.startle();
             else if (Prefs.celebrate(prefs) && shown) clawd.celebrate();
             else clawd.setMood(ClawdView.Mood.IDLE);
         }
@@ -815,7 +817,9 @@ public final class ClawdService extends AccessibilityService
                 clawd.setWalking(true);
                 mover.addListener(new AnimatorListenerAdapter() {
                     @Override public void onAnimationEnd(Animator a) {
-                        if (!dragging) clawd.setWalking(false);
+                        // отложенно: при перенацеливании (клавиатура едет) следующий mover уже
+                        // запущен — шаг не сбиваем, иначе ноги застывают
+                        handler.post(stopWalking);
                     }
                 });
             }
@@ -829,6 +833,12 @@ public final class ClawdService extends AccessibilityService
         });
         mover.start();
     }
+
+    private final Runnable stopWalking = new Runnable() {
+        @Override public void run() {
+            if (!dragging && (mover == null || !mover.isRunning())) clawd.setWalking(false);
+        }
+    };
 
     /** Падает к полю ввода с ускорением (после броска) и приземляется. */
     private void fall(int drop) {
@@ -900,6 +910,7 @@ public final class ClawdService extends AccessibilityService
                         prefs.edit().putFloat(Prefs.X_FRACTION, Math.max(0f, Math.min(1f, f))).apply();
                         dragging = false;
                         clawd.setWalking(false);
+                        if (!falling) place(true); // приподняли чуть-чуть — вернуть на рамку сразу
                     } else {
                         clawd.tapJump();
                         if (Prefs.haptics(prefs) && vibrator != null && vibrator.hasVibrator()) {
@@ -912,6 +923,7 @@ public final class ClawdService extends AccessibilityService
                 case MotionEvent.ACTION_CANCEL:
                     dragging = false;
                     clawd.setWalking(false);
+                    if (shown) place(true);
                     return true;
                 default:
                     return false;

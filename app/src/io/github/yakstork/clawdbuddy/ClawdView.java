@@ -129,7 +129,7 @@ final class ClawdView extends View {
     private int nativeRows() { return style == Style.WEB ? WebFrames.H + WEB_HEAD : 14; }
     private int padLeft() { return style == Style.WEB ? 0 : 3; }  // в WEB слева и так место под ноутбук
     private int padRight() { return style == Style.WEB ? 7 : 3; }
-    private int padTop() { return style == Style.WEB ? 8 : 3; }
+    private int padTop() { return style == Style.WEB ? 8 : style == Style.CLASSIC ? 4 : 3; } // в CLASSIC — под помпон в прыжке
     private int cols() { return padLeft() + nativeCols() + padRight(); }
     private int rows() { return padTop() + nativeRows(); }
     private int bodyCols() { return style == Style.WEB ? 24 : style == Style.SQUARE ? 12 : 16; }
@@ -280,7 +280,8 @@ final class ClawdView extends View {
     /** Приземлился после броска: присед и отряхивание. */
     void land() {
         jump(Jump.LAND);
-        setMood(Mood.SHAKE);
+        // за ноутбуком не отряхивается: иначе убрал бы его до конца ответа
+        if (mood() == Mood.IDLE) setMood(Mood.SHAKE);
     }
 
     private final Runnable ticker = new Runnable() {
@@ -485,6 +486,11 @@ final class ClawdView extends View {
                     f = walking && mood == Mood.IDLE ? WebFrames.WALK[tick % 2] : WebFrames.STAND;
             }
         }
+        boolean laptop = mood == Mood.TYPING || mood == Mood.OUTRO; // за ноутбуком — без шапки
+        // голова в кадрах — колонки 14..29; в приседе и танце строка верха на пиксель ниже
+        int top = WebFrames.BODY_TOP + (f == WebFrames.SQUAT || f == WebFrames.DANCE ? 1 : 0);
+        // шапка — до тела: поднятые в прыжке руки остаются поверх неё
+        if (!laptop) drawHat(c, 14, 29, top, 2);
         drawMap(c, f, mirror);
         boolean sleep = mood == Mood.SLEEP;
         if (p == PHASE_NONE && (mood == Mood.IDLE || sleep) && (blinking || sleep || look != 0 || eyesDown)) {
@@ -500,11 +506,7 @@ final class ClawdView extends View {
                 rect(c, WebFrames.EYE_R + look, r + d, WebFrames.EYE_R + 1 + look, r + 1 + d, eyes);
             }
         }
-        if (mood == Mood.TYPING || mood == Mood.OUTRO) return; // за ноутбуком — без шапки
-        // голова в кадрах — колонки 14..29; в приседе и танце строка верха на пиксель ниже
-        int top = WebFrames.BODY_TOP + (f == WebFrames.SQUAT || f == WebFrames.DANCE ? 1 : 0);
         if (sleep) drawSleep(c, 29, top, 2);
-        drawHat(c, 14, 29, top, 2);
     }
 
     /** Рисует кадр строками: подряд идущие одинаковые пиксели — одним прямоугольником. */
