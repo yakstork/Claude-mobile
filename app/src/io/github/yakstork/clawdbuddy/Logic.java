@@ -28,6 +28,21 @@ final class Logic {
                 || (desc != null && QUEUE.matcher(desc).find());
     }
 
+    /**
+     * Скрытый отступ рамки композера. В чате Claude отдаёт службе внутренний узел рамки: видимая
+     * рамка шире него сверху и снизу, и области нажатия кнопок выступают за узел вниз. Видимая
+     * рамка охватывает кнопки с запасом 2dp, отступ сверху такой же, как снизу. Если узел и так
+     * охватывает кнопки (главная, одна строка) — отступа нет.
+     *
+     * frameBottom — низ узла рамки, buttonBottom — низ самой нижней кнопки, которая в него
+     * упирается (-1, если таких нет).
+     */
+    static int framePad(int frameBottom, int buttonBottom, float density) {
+        int pad = buttonBottom + Math.round(2 * density) - frameBottom;
+        // больше 16dp — это уже не отступ рамки, а что-то постороннее
+        return pad > 0 && pad <= Math.round(16 * density) ? pad : 0;
+    }
+
     /** Кто на переднем плане. */
     static final class Front {
         static final String CLAUDE = "com.anthropic.claude";

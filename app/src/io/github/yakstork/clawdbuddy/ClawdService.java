@@ -105,6 +105,8 @@ public final class ClawdService extends AccessibilityService
     /** Текстовое поле композера и насколько рамка композера выступает за него (вложения сверху и т. п.). */
     private AccessibilityNodeInfo editNode;
     private int aboveEdit, leftOfEdit, rightOfEdit;
+    /** Скрытый отступ рамки, уже учтённый в aboveEdit, — для отчёта. */
+    private int framePad;
     private long lastFullFind;
     private long lastReportAt;
     private final Rect edit = new Rect();
@@ -535,7 +537,7 @@ public final class ClawdService extends AccessibilityService
         Rect er = new Rect();
         Rect r = new Rect();
         e.getBoundsInScreen(er);
-        int top = er.top, left = er.left, right = er.right;
+        int top = er.top, left = er.left, right = er.right, bottom = er.bottom;
         int gap = Math.round(16 * dm.density);
 
         AccessibilityNodeInfo p = e.getParent();
@@ -546,8 +548,21 @@ public final class ClawdService extends AccessibilityService
             top = Math.min(top, r.top);
             left = Math.min(left, r.left);
             right = Math.max(right, r.right);
+            bottom = Math.max(bottom, r.bottom);
             p = p.getParent();
         }
+
+        // кнопки композера, выступающие за узел рамки вниз, выдают её скрытый отступ
+        int buttonBottom = -1;
+        for (AccessibilityNodeInfo n : nodes) {
+            if (n == null || !n.isClickable() || !n.isVisibleToUser()) continue;
+            n.getBoundsInScreen(r);
+            if (r.left >= left && r.right <= right && r.top < bottom && r.bottom > bottom) {
+                buttonBottom = Math.max(buttonBottom, r.bottom);
+            }
+        }
+        framePad = Logic.framePad(bottom, buttonBottom, dm.density);
+        top -= framePad;
 
         aboveEdit = er.top - top;
         leftOfEdit = er.left - left;
@@ -570,6 +585,8 @@ public final class ClawdService extends AccessibilityService
         nodes.get(0).getBoundsInScreen(r);
         boolean settled = r.left == 0 && r.top == 0;
         StringBuilder tail = settled && now - lastReportAt >= REPORT_MS ? new StringBuilder() : null;
+        // отчёт снят недавно — перемерить ещё раз, иначе на экране без изменений останется старый
+        if (settled && tail == null) contentDirty = true;
         if (stopNode == null) stopNode = busyInFeed(nodes, top, tail);
 
         if (tail != null) {
@@ -792,7 +809,7 @@ public final class ClawdService extends AccessibilityService
                 + " · Android " + Build.VERSION.RELEASE + " · " + dm.widthPixels + "×" + dm.heightPixels
                 + " @" + dm.density + "\n");
         sb.append("над текстом +").append(aboveEdit).append(", слева ").append(leftOfEdit)
-                .append(", справа ").append(rightOfEdit).append(stopNode != null ? ", Стоп найден" : "").append('\n');
+                .append(", справа ").append(rightOfEdit).append(", скрытый отступ ").append(framePad).append(stopNode != null ? ", Стоп найден" : "").append('\n');
         sb.append("предки поля:\n");
         AccessibilityNodeInfo p = e;
         for (int i = 0; i < 7 && p != null; i++) {

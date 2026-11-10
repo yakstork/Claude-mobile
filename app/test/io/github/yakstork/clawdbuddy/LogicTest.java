@@ -22,6 +22,7 @@ public final class LogicTest {
 
     public static void main(String[] args) {
         busy();
+        framePad();
         front();
         journal();
         if (failed > 0) {
@@ -29,6 +30,20 @@ public final class LogicTest {
             System.exit(1);
         }
         System.out.println("LogicTest: всё зелёное");
+    }
+
+    /** Числа — из отчётов с OnePlus CPH2771 (плотность 3.5), сверены со скриншотами. */
+    private static void framePad() {
+        // чат Code, две строки: узел рамки до 2425, кнопки до 2446, видимая рамка на 28 шире
+        check(Logic.framePad(2425, 2446, 3.5f) == 28, "framePad: чат, скрытый отступ 28");
+        // то же с вложениями и клавиатурой
+        check(Logic.framePad(1568, 1589, 3.5f) == 28, "framePad: вложения, скрытый отступ 28");
+        // главная, одна строка: узел до 2453 уже охватывает кнопки (2446) — отступа нет
+        check(Logic.framePad(2453, 2446, 3.5f) == 0, "framePad: главная, отступа нет");
+        // кнопок рядом нет
+        check(Logic.framePad(2453, -1, 3.5f) == 0, "framePad: без кнопок");
+        // что-то высокое рядом — не рамка, отступ не раздуваем
+        check(Logic.framePad(1000, 1500, 3.5f) == 0, "framePad: слишком большой выступ игнорируется");
     }
 
     private static void busy() {
