@@ -46,10 +46,13 @@ public final class MainActivity extends Activity {
     private LinearLayout sizeRow;
     private LinearLayout styleRow;
     private LinearLayout colorRows;
+    private LinearLayout hatRow;
+    private TextView stats;
 
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
             updateService();
+            updateStats();
             handler.postDelayed(this, 1000);
         }
     };
@@ -73,6 +76,7 @@ public final class MainActivity extends Activity {
         col.addView(serviceCard());
         col.addView(lookCard());
         col.addView(behaviourCard());
+        col.addView(statsCard());
         col.addView(diagCard());
 
         Button open = button("Открыть Claude", true);
@@ -115,6 +119,7 @@ public final class MainActivity extends Activity {
         preview.setStyle(Prefs.style(prefs));
         preview.setSizeDp(84);
         preview.setColor(Prefs.color(prefs));
+        preview.setHat(Prefs.hat(prefs));
         FrameLayout.LayoutParams plp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         plp.gravity = Gravity.BOTTOM | Gravity.START;
@@ -202,6 +207,28 @@ public final class MainActivity extends Activity {
         c.addView(styleRow);
         paintStyle();
 
+        c.addView(label("Шапка"));
+        hatRow = new LinearLayout(this);
+        final ClawdView.Hat[] hats = ClawdView.Hat.values();
+        String[] hatNames = {"Нет", "Кепка", "Наушники", "Колпак"};
+        for (int i = 0; i < hats.length; i++) {
+            final ClawdView.Hat h = hats[i];
+            Button b = chip(hatNames[i]);
+            b.setPadding(0, 0, 0, 0);
+            b.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    prefs.edit().putString(Prefs.HAT, h.name().toLowerCase(java.util.Locale.ROOT)).apply();
+                    preview.setHat(h);
+                    paintHat();
+                }
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(42), 1f);
+            lp.rightMargin = i < hats.length - 1 ? dp(8) : 0;
+            hatRow.addView(b, lp);
+        }
+        c.addView(hatRow);
+        paintHat();
+
         c.addView(label("Размер"));
         sizeRow = new LinearLayout(this);
         String[] names = {"S", "M", "L"};
@@ -272,6 +299,19 @@ public final class MainActivity extends Activity {
         c.addView(toggle("Печатает на ноутбуке, пока Claude отвечает", Prefs.TYPING, Prefs.typing(prefs)));
         c.addView(toggle("Подпрыгивает, когда ответ готов", Prefs.CELEBRATE, Prefs.celebrate(prefs)));
         c.addView(toggle("Вибрация при нажатии на него", Prefs.HAPTICS, Prefs.haptics(prefs)));
+        c.addView(toggle("Засыпает, если долго ничего не происходит", Prefs.SLEEP, Prefs.sleep(prefs)));
+        c.addView(toggle("Ходит ножками, когда переезжает", Prefs.WALK, Prefs.walk(prefs)));
+        c.addView(toggle("Пугается, когда нажали «Стоп»", Prefs.STOP_REACT, Prefs.stopReact(prefs)));
+        c.addView(toggle("Смотрит вниз, когда ты печатаешь", Prefs.WATCH_TYPING, Prefs.watchTyping(prefs)));
+        c.addView(toggle("Можно подбросить пальцем", Prefs.TOSS, Prefs.toss(prefs)));
+        return c;
+    }
+
+    private View statsCard() {
+        LinearLayout c = card("Статистика");
+        stats = text("", TEXT);
+        c.addView(stats);
+        c.addView(toggle("Считать ответы", Prefs.COUNT, Prefs.count(prefs)));
         return c;
     }
 
@@ -315,6 +355,11 @@ public final class MainActivity extends Activity {
         diag.setText(on ? ClawdService.status : "служба выключена");
     }
 
+    private void updateStats() {
+        int today = Prefs.countDay(prefs) == Prefs.today() ? Prefs.countToday(prefs) : 0;
+        stats.setText("Сегодня: " + today + " · Всего: " + Prefs.countTotal(prefs));
+    }
+
     private boolean isServiceEnabled() {
         if (ClawdService.instance != null) return true;
         String list = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
@@ -345,6 +390,17 @@ public final class MainActivity extends Activity {
         for (int i = 0; i < styleRow.getChildCount(); i++) {
             Button b = (Button) styleRow.getChildAt(i);
             boolean on = styles[i].name().equals(sel);
+            b.setBackground(round(on ? ACCENT : BG, dp(12), on ? ACCENT : LINE));
+            b.setTextColor(on ? Color.WHITE : TEXT);
+        }
+    }
+
+    private void paintHat() {
+        String sel = Prefs.hat(prefs).name();
+        ClawdView.Hat[] hats = ClawdView.Hat.values();
+        for (int i = 0; i < hatRow.getChildCount(); i++) {
+            Button b = (Button) hatRow.getChildAt(i);
+            boolean on = hats[i].name().equals(sel);
             b.setBackground(round(on ? ACCENT : BG, dp(12), on ? ACCENT : LINE));
             b.setTextColor(on ? Color.WHITE : TEXT);
         }

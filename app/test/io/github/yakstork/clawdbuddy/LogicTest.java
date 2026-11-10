@@ -26,6 +26,7 @@ public final class LogicTest {
         framePad();
         front();
         journal();
+        stopAndSleep();
         if (failed > 0) {
             System.err.println("Провалено проверок: " + failed);
             System.exit(1);
@@ -184,6 +185,28 @@ public final class LogicTest {
         check(!f.claudeInFront(true, false, 700), "е: заново, 0 мс");
         check(!f.claudeInFront(true, false, 1200), "е: прошло 500 мс от нового старта");
         check(f.claudeInFront(true, false, 1300), "е: 600 мс от нового старта");
+    }
+
+    private static void stopAndSleep() {
+        String[] stop = {"Стоп", "Stop response", "Остановить ответ", " stop "};
+        for (String s : stop) check(Logic.isStop(s), "isStop «" + s + "»");
+        String[] notStop = {"Stop the war", "Отправить", ""};
+        for (String s : notStop) check(!Logic.isStop(s), "не isStop «" + s + "»");
+        check(!Logic.isStop(null), "не isStop null");
+
+        check(Logic.stoppedByUser(5000, 3000), "stoppedByUser: 2 с назад");
+        check(Logic.stoppedByUser(6000, 3000), "stoppedByUser: ровно 3 с");
+        check(!Logic.stoppedByUser(6001, 3000), "не stoppedByUser: 3,001 с");
+        check(!Logic.stoppedByUser(500000, 0), "не stoppedByUser: не нажимали");
+
+        check(!Logic.shouldSleep(119999, 0, false), "shouldSleep: 119,999 с рано");
+        check(Logic.shouldSleep(120000, 0, false), "shouldSleep: ровно 2 мин");
+        check(!Logic.shouldSleep(500000, 0, true), "shouldSleep: занят — не спит");
+        check(!Logic.shouldSleep(130000, 100000, false), "shouldSleep: активность недавно");
+
+        check(Logic.countToday(20260101, 20260101, 4) == 5, "countToday: тот же день +1");
+        check(Logic.countToday(20251231, 20260101, 4) == 1, "countToday: новый день — 1");
+        check(Logic.countToday(0, 20260101, 0) == 1, "countToday: первый раз — 1");
     }
 
     private static void journal() {
