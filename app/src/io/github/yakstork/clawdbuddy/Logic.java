@@ -38,18 +38,26 @@ final class Logic {
         /** С какого момента Claude «претендует» на передний план; 0 — таймер не идёт. */
         long topSince;
         private String home;
-        /** Передний план достался Claude по претензии над рабочим столом, а не по его событию. */
+        /** Передний план держится на фокусе Claude над рабочим столом: уйдёт фокус — вернётся столу. */
         private boolean claimedFromHome;
 
         /**
          * Событие смены окна. Claude и рабочий стол («Недавние» — это тоже он) принимаются всегда,
          * остальные — только полноэкранные приложения. Возвращает true, если теперь на переднем
          * плане не Claude (службе пора прятаться).
+         *
+         * claudeFocused — окно Claude сейчас сверху и в фокусе. Тогда событие рабочего стола
+         * запоздало (лаунчер шлёт его через 0,3–0,5 с после входа в Claude — конец анимации
+         * открытия) и передний план не меняет; но держится он дальше только на фокусе.
          */
-        boolean onWindowEvent(String pkg, String home, boolean fullScreenApp) {
+        boolean onWindowEvent(String pkg, String home, boolean fullScreenApp, boolean claudeFocused) {
             this.home = home;
             boolean known = CLAUDE.equals(pkg) || pkg.equals(home);
             if (!known && !fullScreenApp) return false;
+            if (claudeFocused && pkg.equals(home) && CLAUDE.equals(foreground)) {
+                claimedFromHome = true;
+                return false;
+            }
             foreground = pkg;
             claimedFromHome = false;
             return !CLAUDE.equals(pkg);

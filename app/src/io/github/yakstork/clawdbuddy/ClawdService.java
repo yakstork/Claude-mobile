@@ -263,10 +263,12 @@ public final class ClawdService extends AccessibilityService
             }
         }
         long now = SystemClock.uptimeMillis();
+        // запоздалое событие лаунчера после входа в Claude: окно Claude уже сверху и в фокусе
+        boolean late = pkg.equals(homePackage) && claudeRootOnTop() != null && claudeFocused;
         // пропущенные (клавиатура, плавающие окна) не пишем — вытеснят историю входов и выходов
-        if (known || full) journal.add(now, "окно " + pkg);
+        if (known || full) journal.add(now, "окно " + pkg + (late ? " (Claude в фокусе)" : ""));
         String before = front.foreground;
-        boolean notClaude = front.onWindowEvent(pkg, homePackage, full);
+        boolean notClaude = front.onWindowEvent(pkg, homePackage, full, late);
         logForeground(now, before);
         if (notClaude) hide("на переднем плане " + front.foreground);
     }

@@ -16,7 +16,7 @@ public final class LogicTest {
 
     private static Logic.Front claudeFront() {
         Logic.Front f = new Logic.Front();
-        f.onWindowEvent(C, HOME, false);
+        f.onWindowEvent(C, HOME, false, false);
         return f;
     }
 
@@ -49,7 +49,7 @@ public final class LogicTest {
 
         // (б) событие home -> не виден; «Недавние»: top, без фокуса сколько угодно
         f = claudeFront();
-        check(f.onWindowEvent(HOME, HOME, false), "б: home — прятаться");
+        check(f.onWindowEvent(HOME, HOME, false, false), "б: home — прятаться");
         check(!f.claudeInFront(true, false, 0), "б: сразу не виден");
         check(!f.claudeInFront(true, false, 5000), "б: Недавние 5 с не виден");
         check(!f.claudeInFront(true, false, 60000), "б: Недавние 60 с не виден");
@@ -57,7 +57,7 @@ public final class LogicTest {
 
         // (в) БАГ: событие Claude, затем запоздалое событие home, потом top и focused
         f = claudeFront();
-        f.onWindowEvent(HOME, HOME, false);
+        f.onWindowEvent(HOME, HOME, false, false);
         check(!f.claudeInFront(true, true, 1000), "в: 0 мс не виден");
         check(f.timing(), "в: таймер идёт");
         check(!f.claudeInFront(true, true, 1599), "в: 599 мс не виден");
@@ -66,14 +66,14 @@ public final class LogicTest {
 
         // (г) возврат без события Claude
         f = new Logic.Front();
-        f.onWindowEvent(HOME, HOME, false);
+        f.onWindowEvent(HOME, HOME, false, false);
         check(!f.claudeInFront(true, true, 100), "г: сразу не виден");
         check(f.claudeInFront(true, true, 700), "г: через 600 мс виден");
         check(C.equals(f.foreground), "г: foreground == Claude");
 
         // (ж) над рабочим столом потеря фокуса посреди отсчёта сбрасывает таймер
         f = new Logic.Front();
-        f.onWindowEvent(HOME, HOME, false);
+        f.onWindowEvent(HOME, HOME, false, false);
         check(!f.claudeInFront(true, true, 1), "ж: отсчёт пошёл");
         check(!f.claudeInFront(true, false, 300), "ж: фокус ушёл — не виден");
         check(!f.timing(), "ж: таймер сброшен");
@@ -87,26 +87,38 @@ public final class LogicTest {
         check(HOME.equals(f.foreground), "з: foreground снова рабочий стол");
         check(!f.claudeInFront(true, false, 9000), "з: в Недавних не виден");
         // а после настоящего события Claude потеря фокуса его не прячет (как раньше)
-        f.onWindowEvent(C, HOME, false);
+        f.onWindowEvent(C, HOME, false, false);
         check(f.claudeInFront(true, false, 9100), "з: после события Claude виден и без фокуса");
+
+        // (и) запоздалое событие лаунчера при входе, Claude уже сверху и в фокусе: не прятаться
+        f = claudeFront();
+        check(!f.onWindowEvent(HOME, HOME, false, true), "и: запоздалое событие — не прятаться");
+        check(C.equals(f.foreground), "и: foreground остался Claude");
+        check(f.claudeInFront(true, true, 100), "и: виден без паузы");
+        // но это мог быть и ранний сигнал жеста в «Недавние»: фокус ушёл — прячемся
+        check(!f.claudeInFront(true, false, 200), "и: фокус ушёл — не виден");
+        check(HOME.equals(f.foreground), "и: foreground рабочий стол");
+        // событие лаунчера, когда Claude не в фокусе, прячет как раньше
+        f = claudeFront();
+        check(f.onWindowEvent(HOME, HOME, false, false), "и: Claude без фокуса — прятаться");
 
         // (д) чужое полноэкранное приложение и плавающее
         f = claudeFront();
-        check(f.onWindowEvent("com.other", HOME, true), "д: чужое полноэкранное — прятаться");
+        check(f.onWindowEvent("com.other", HOME, true, false), "д: чужое полноэкранное — прятаться");
         check(!f.claudeInFront(false, false, 100), "д: Claude не сверху — не виден");
         f = claudeFront();
-        check(!f.onWindowEvent("com.screenshot", HOME, false), "д: плавающее игнорируется");
+        check(!f.onWindowEvent("com.screenshot", HOME, false, false), "д: плавающее игнорируется");
         check("com.anthropic.claude".equals(f.foreground), "д: foreground не изменился");
         check(f.claudeInFront(true, false, 100), "д: после плавающего Claude виден");
         f = claudeFront();
-        f.onWindowEvent("com.other", HOME, true);
+        f.onWindowEvent("com.other", HOME, true, false);
         check(!f.claudeInFront(true, false, 100), "д: закрыли чужое, 0 мс не виден");
         check(!f.claudeInFront(true, false, 699), "д: 599 мс не виден");
         check(f.claudeInFront(true, false, 700), "д: 600 мс виден без фокуса");
 
         // (е) таймер сбрасывается, если top пропал
         f = claudeFront();
-        f.onWindowEvent("com.other", HOME, true);
+        f.onWindowEvent("com.other", HOME, true, false);
         f.claudeInFront(true, false, 100);
         f.claudeInFront(true, false, 400);
         check(!f.claudeInFront(false, false, 500), "е: top пропал — не виден");
