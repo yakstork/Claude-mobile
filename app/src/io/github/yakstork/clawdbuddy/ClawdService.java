@@ -26,7 +26,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
-import java.util.regex.Pattern;
 
 /**
  * Следит только за окнами официального Claude и держит Clawd над его полем ввода в отдельном
@@ -46,18 +45,7 @@ import java.util.regex.Pattern;
 public final class ClawdService extends AccessibilityService
         implements SharedPreferences.OnSharedPreferenceChangeListener {
 
-    static final String CLAUDE = "com.anthropic.claude";
-
-    /** Кнопка остановки ответа: англ. «Stop response» / «Stop», русская локаль — «Остановить ответ» / «Стоп». */
-    private static final Pattern STOP = Pattern.compile(
-            "(?iu)^\\s*(stop( response| generating| responding)?|остановить( ответ| генерацию)?|стоп)\\s*$");
-
-    /** Подсказка поля, пока Claude работает: «Поставьте сообщение в очередь…», «Queue a message…». */
-    private static final Pattern QUEUE = Pattern.compile("(?iu)(сообщение в очередь|queue a message|queue message)");
-    /** Строка состояния Code: «57 с · думает…», «1 мин 3 с · …», «Думает…», «Claude работает…», «Thinking…». */
-    private static final Pattern WORKING = Pattern.compile(
-            "(?iu)^\\s*((\\d+\\s*(мин|min|m)\\s*)?\\d+\\s*(с|сек|s)\\s*·"
-            + "|(думает|всё ещё думает|почти додумал|claude работает|в работе|thinking|working).*…)");
+    static final String CLAUDE = Logic.Front.CLAUDE;
 
     private static final long OPEN_SETTLE_MS = 150;
     private static final long BURST_MS = 800;
@@ -80,6 +68,8 @@ public final class ClawdService extends AccessibilityService
     /** Список окон на экране, обновляется раз в 3 с — часть отчёта. */
     static volatile String lastWindows = "";
     private long lastWindowsAt;
+    /** Журнал событий — часть отчёта; текста чата в нём нет. */
+    static final Logic.Journal journal = new Logic.Journal();
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
@@ -89,13 +79,13 @@ public final class ClawdService extends AccessibilityService
     private View touch;
     private WindowManager.LayoutParams tlp;
     private Rect bodyRect = new Rect();
-    /** Приложение на переднем плане по последнему событию окна приложения; null — ещё не знаем. */
-    private String foreground;
+    /** Кто на переднем плане (по событиям окон приложений и рабочего стола). */
+    private final Logic.Front front = new Logic.Front();
     private String homePackage;
     /** Окна Claude сверху вниз — всплывающие подсказки и главное окно. */
     private final List<AccessibilityNodeInfo> claudeRoots = new ArrayList<AccessibilityNodeInfo>();
-    /** С какого момента окно Claude сверху, хотя последним «на передний план» вышло другое приложение. */
-    private long topNotForegroundSince;
+    /** Есть ли среди окон Claude окно с фокусом ввода (по последней проверке). */
+    private boolean claudeFocused;
     private Vibrator vibrator;
     private android.os.PowerManager power;
     /** Когда последний раз что-то менялось (события, сдвиг рамки) — для редкого опроса в покое. */
@@ -258,24 +248,32 @@ public final class ClawdService extends AccessibilityService
      * («Недавние» — это тоже он): скриншотер, шторка и тосты — системные окна, их пропускаем.
      */
     private void trackForeground(AccessibilityEvent e, String pkg) {
-        String next = null;
-        if (pkg.equals(CLAUDE) || pkg.equals(homePackage)) {
-            next = pkg;
-        } else {
+        boolean full = false;
+        boolean known = pkg.equals(CLAUDE) || pkg.equals(homePackage);
+        if (!known) {
             int id = e.getWindowId();
             for (AccessibilityWindowInfo w : getWindows()) {
                 if (w.getId() == id) {
                     Rect r = new Rect();
                     w.getBoundsInScreen(r);
                     // превью скриншота и прочие плавающие окна приложений — не уход из Claude
-                    if (w.getType() == AccessibilityWindowInfo.TYPE_APPLICATION && coversScreen(r)) next = pkg;
+                    full = w.getType() == AccessibilityWindowInfo.TYPE_APPLICATION && coversScreen(r);
                     break;
                 }
             }
         }
-        if (next == null) return;
-        foreground = next;
-        if (!CLAUDE.equals(next)) hide("на переднем плане " + next);
+        long now = SystemClock.uptimeMillis();
+        // пропущенные (клавиатура, плавающие окна) не пишем — вытеснят историю входов и выходов
+        if (known || full) journal.add(now, "окно " + pkg);
+        String before = front.foreground;
+        boolean notClaude = front.onWindowEvent(pkg, homePackage, full);
+        logForeground(now, before);
+        if (notClaude) hide("на переднем плане " + front.foreground);
+    }
+
+    private void logForeground(long now, String before) {
+        String after = front.foreground;
+        if (after != null && !after.equals(before)) journal.add(now, "foreground " + after);
     }
 
     /** События содержимого нужны только пока открыт Claude — иначе служба не грузит другие приложения. */
@@ -327,25 +325,13 @@ public final class ClawdService extends AccessibilityService
         }
 
         AccessibilityNodeInfo root = claudeRootOnTop();
-        if (root != null && foreground != null && !CLAUDE.equals(foreground)) {
-            // Чужое окно (например, системный диалог) закрылось, а Claude события не прислал:
-            // если Claude сверху уже 0,6 с, значит он и на переднем плане. Кроме рабочего стола —
-            // в «Недавних» окно Claude может числиться сверху.
-            if (foreground.equals(homePackage)) {
-                topNotForegroundSince = 0;
-                root = null;
-            } else {
-                if (topNotForegroundSince == 0) topNotForegroundSince = now;
-                if (now - topNotForegroundSince >= 600) {
-                    foreground = CLAUDE;
-                } else {
-                    root = null;
-                    schedule(300);
-                }
-            }
-        } else {
-            topNotForegroundSince = 0;
+        String before = front.foreground;
+        if (!front.claudeInFront(root != null, claudeFocused, now)) {
+            // Чужое окно закрылось, а Claude события не прислал: проверяем, пока идёт отсчёт
+            if (front.timing()) schedule(300);
+            root = null;
         }
+        logForeground(now, before);
         if (root == null) {
             if (claudeOnTop) {
                 claudeOnTop = false;
@@ -422,6 +408,7 @@ public final class ClawdService extends AccessibilityService
         StringBuilder sb = dump ? new StringBuilder() : null;
         AccessibilityNodeInfo result = null;
         boolean decided = false;
+        boolean focused = false;
         Rect r = new Rect();
         for (AccessibilityWindowInfo w : windows) {
             if (decided && sb == null) break;
@@ -443,6 +430,7 @@ public final class ClawdService extends AccessibilityService
                         claudeRoots.clear();
                     }
                     claudeRoots.add(root);
+                    if (w.isFocused()) focused = true;
                 } else if (result != null || coversScreen(r)) {
                     decided = true;
                 }
@@ -457,6 +445,7 @@ public final class ClawdService extends AccessibilityService
             lastWindows = sb.toString();
         }
         if (result == null) claudeRoots.clear();
+        claudeFocused = focused;
         return result;
     }
 
@@ -589,21 +578,10 @@ public final class ClawdService extends AccessibilityService
         }
     }
 
-    private static boolean isStop(AccessibilityNodeInfo n) {
-        CharSequence d = n.getContentDescription();
-        CharSequence t = n.getText();
-        return (d != null && STOP.matcher(d).matches()) || (t != null && STOP.matcher(t).matches());
-    }
-
     /** Кнопка «Стоп», подсказка «…в очередь» (текст, подсказка или описание поля) или строка состояния с таймером. */
     private static boolean isBusy(AccessibilityNodeInfo n) {
-        if (isStop(n)) return true;
-        CharSequence t = n.getText();
         CharSequence h = Build.VERSION.SDK_INT >= 26 ? n.getHintText() : null;
-        CharSequence d = n.getContentDescription();
-        return (t != null && (QUEUE.matcher(t).find() || WORKING.matcher(t).find()))
-                || (h != null && QUEUE.matcher(h).find())
-                || (d != null && QUEUE.matcher(d).find());
+        return Logic.isBusy(n.getText(), h, n.getContentDescription());
     }
 
     /**
@@ -684,6 +662,7 @@ public final class ClawdService extends AccessibilityService
         touch.setVisibility(View.VISIBLE);
         setTouchable(true);
         shown = true;
+        journal.add(now, "показал");
         if (generating && Prefs.typing(prefs)) clawd.setMood(ClawdView.Mood.TYPING);
     }
 
@@ -692,6 +671,7 @@ public final class ClawdService extends AccessibilityService
         if (!shown) return;
         shown = false;
         hiddenAt = SystemClock.uptimeMillis();
+        journal.add(hiddenAt, "спрятал: " + (why != null ? why : "ошибка"));
         if (mover != null) mover.cancel();
         clawd.animate().cancel();
         clawd.setVisibility(View.GONE);
@@ -779,7 +759,13 @@ public final class ClawdService extends AccessibilityService
      */
     private String report(AccessibilityNodeInfo e, List<AccessibilityNodeInfo> nodes, int fromY, int toY) {
         DisplayMetrics dm = getResources().getDisplayMetrics();
-        StringBuilder sb = new StringBuilder("Clawd 0.6 · " + Build.MANUFACTURER + " " + Build.MODEL
+        String version = "?";
+        try {
+            version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (android.content.pm.PackageManager.NameNotFoundException ignored) {
+            // своего пакета нет — не бывает
+        }
+        StringBuilder sb = new StringBuilder("Clawd " + version + " · " + Build.MANUFACTURER + " " + Build.MODEL
                 + " · Android " + Build.VERSION.RELEASE + " · " + dm.widthPixels + "×" + dm.heightPixels
                 + " @" + dm.density + "\n");
         sb.append("над текстом +").append(aboveEdit).append(", слева ").append(leftOfEdit)
