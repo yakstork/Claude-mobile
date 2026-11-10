@@ -1,5 +1,2 @@
 build/
 tools/
-keystore/
-*.keystore
-*.jks
